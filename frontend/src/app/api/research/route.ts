@@ -36,15 +36,12 @@ export async function POST(req: Request) {
 
     const { run, usedFallback } = await runResearchPipeline(parsed.data.query);
 
-    return NextResponse.json(
-      { ...run, usedFallback },
-      {
-        status: 200,
-        headers: {
-          'X-Gemini-Fallback-Used': usedFallback ? 'true' : 'false',
-        },
-      }
-    );
+    return NextResponse.json(run, {
+      status: 200,
+      headers: {
+        'X-Gemini-Fallback-Used': usedFallback ? 'true' : 'false',
+      },
+    });
   } catch (error) {
     if (error instanceof PipelineError) {
       return NextResponse.json(

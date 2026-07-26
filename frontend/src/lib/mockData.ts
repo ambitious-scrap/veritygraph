@@ -6,6 +6,10 @@ export const MOCK_RESEARCH_RUN: ResearchRun = {
   summary:
     'Synthesis of 14 prospective cohort meta-analyses indicates moderate daily coffee intake (2–4 cups) is associated with a 15% reduction in all-cause mortality. However, claims regarding acute blood pressure reduction are directly contradicted by trial data, and evidence for decaffeinated coffee protection against specific neurodegenerative outcomes remains insufficient.',
   createdAt: new Date().toISOString(),
+  mode: 'demo',
+  providerMetadata: {
+    fallbackUsed: false,
+  },
   metrics: {
     durationMs: 4200,
     sourcesScanned: 18,
@@ -36,7 +40,7 @@ export const MOCK_RESEARCH_RUN: ResearchRun = {
           domain: 'acpjournals.org',
           excerpt:
             'Inverse association observed between coffee drinking and mortality from heart disease, cancer, respiratory disease, stroke, diabetes, and kidney disease.',
-          stance: 'supported',
+          stance: 'support',
           relevanceScore: 0.96,
         },
         {
@@ -46,7 +50,7 @@ export const MOCK_RESEARCH_RUN: ResearchRun = {
           domain: 'bmj.com',
           excerpt:
             'Coffee consumption was consistently associated with lower risk of all-cause mortality and heart disease across 201 meta-analyses.',
-          stance: 'supported',
+          stance: 'support',
           relevanceScore: 0.92,
         },
       ],
@@ -72,7 +76,7 @@ export const MOCK_RESEARCH_RUN: ResearchRun = {
           domain: 'ajh.oxfordjournals.org',
           excerpt:
             'Caffeine administration resulted in a significant acute elevation of systolic (+8.1 mmHg) and diastolic (+5.7 mmHg) blood pressure.',
-          stance: 'contradicted',
+          stance: 'contradict',
           relevanceScore: 0.95,
         },
       ],
@@ -98,7 +102,7 @@ export const MOCK_RESEARCH_RUN: ResearchRun = {
           domain: 'ajcn.nutrition.org',
           excerpt:
             'Significant reduction of serum C-reactive protein noted in type-2 diabetic subjects (p < 0.01), but negligible variation observed in control group.',
-          stance: 'partial',
+          stance: 'neutral',
           relevanceScore: 0.88,
         },
       ],
@@ -124,7 +128,7 @@ export const MOCK_RESEARCH_RUN: ResearchRun = {
           domain: 'neurology.org',
           excerpt:
             'Strong inverse association found for caffeinated coffee; decaffeinated coffee showed no significant protection after adjusting for covariates.',
-          stance: 'insufficient',
+          stance: 'neutral',
           relevanceScore: 0.81,
         },
       ],

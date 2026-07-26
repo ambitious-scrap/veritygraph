@@ -1,7 +1,14 @@
 import { GoogleGenAI, Type } from '@google/genai';
 import { z } from 'zod';
 import { RawSource, CandidateEvidence } from './tavily';
-import { Claim, ClaimVerdict, Evidence, PipelineError, PipelineStage } from './types';
+import {
+  Claim,
+  ClaimVerdict,
+  Evidence,
+  EvidenceStance,
+  PipelineError,
+  PipelineStage,
+} from './types';
 
 export interface ExtractedClaim {
   text: string;
@@ -14,40 +21,129 @@ export interface GeminiCallResult<T> {
   usedFallback: boolean;
 }
 
+type GeminiFailureKind =
+  | 'retryable-provider'
+  | 'non-retryable-provider'
+  | 'invalid-output';
+
+interface CategorizedError {
+  kind: GeminiFailureKind;
+  message: string;
+}
+
+const GEMINI_TIMEOUT_MS = 20000;
+
+// Strict Zod Schemas
 const claimExtractionSchema = z
   .array(
-    z.object({
-      text: z.string().min(1),
-      supportQuery: z.string().min(1),
-      challengeQuery: z.string().min(1),
-    })
+    z
+      .object({
+        text: z.string().min(10).max(500),
+        supportQuery: z.string().min(3).max(300),
+        challengeQuery: z.string().min(3).max(300),
+      })
+      .strict()
   )
   .length(3);
 
-const rawVerificationSchema = z.object({
-  verdict: z.string(),
-  confidence: z.number(),
-  explanation: z.string(),
-  evidence: z
-    .array(
-      z.object({
-        sourceId: z.string().optional(),
-        id: z.string().optional(),
-        stance: z.string().optional().default('neutral'),
-        relevanceScore: z.number().optional(),
-        relevance: z.number().optional(),
-      })
-    )
-    .optional()
-    .default([]),
-});
+const rawVerificationSchema = z
+  .object({
+    verdict: z.enum(['supported', 'contradicted', 'partial', 'insufficient']),
+    confidence: z.number().min(0).max(100),
+    explanation: z.string().min(10).max(800),
+    evidence: z
+      .array(
+        z
+          .object({
+            sourceId: z.string().min(1),
+            stance: z.enum(['support', 'contradict', 'neutral']),
+            relevanceScore: z.number().min(0).max(100),
+          })
+          .strict()
+      )
+      .max(6),
+  })
+  .strict();
 
-const synthesisSchema = z.object({
-  summary: z.string().min(1),
-});
+const synthesisSchema = z
+  .object({
+    summary: z.string().min(40).max(1200),
+  })
+  .strict();
 
 /**
- * Executes a Gemini model call with primary key, falling back to secondary key on failure.
+ * Promise-based 20-second timeout wrapper for Gemini calls
+ */
+function withTimeout<T>(promise: Promise<T>, timeoutMs = GEMINI_TIMEOUT_MS): Promise<T> {
+  let timeoutId: NodeJS.Timeout | number;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      const err = new Error('Gemini request timed out after 20 seconds');
+      err.name = 'TimeoutError';
+      reject(err);
+    }, timeoutMs);
+  });
+
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    clearTimeout(timeoutId);
+  });
+}
+
+/**
+ * Classifies an error into retryable, non-retryable, or invalid output
+ */
+function classifyError(error: unknown): CategorizedError {
+  if (
+    error &&
+    typeof error === 'object' &&
+    'kind' in error &&
+    (error.kind === 'invalid-output' ||
+      error.kind === 'non-retryable-provider' ||
+      error.kind === 'retryable-provider')
+  ) {
+    return error as CategorizedError;
+  }
+
+  const msg = error instanceof Error ? error.message : String(error);
+  const name = error instanceof Error ? error.name : '';
+  const lowerMsg = msg.toLowerCase();
+
+  if (
+    name === 'TimeoutError' ||
+    lowerMsg.includes('429') ||
+    lowerMsg.includes('500') ||
+    lowerMsg.includes('502') ||
+    lowerMsg.includes('503') ||
+    lowerMsg.includes('quota') ||
+    lowerMsg.includes('rate limit') ||
+    lowerMsg.includes('resource_exhausted') ||
+    lowerMsg.includes('overloaded') ||
+    lowerMsg.includes('unavailable') ||
+    lowerMsg.includes('network') ||
+    lowerMsg.includes('fetch failed') ||
+    lowerMsg.includes('econnreset') ||
+    lowerMsg.includes('etimedout')
+  ) {
+    return { kind: 'retryable-provider', message: 'Provider temporary unavailability or rate limit' };
+  }
+
+  if (
+    lowerMsg.includes('400') ||
+    lowerMsg.includes('401') ||
+    lowerMsg.includes('403') ||
+    lowerMsg.includes('404') ||
+    lowerMsg.includes('invalid model') ||
+    lowerMsg.includes('not found') ||
+    lowerMsg.includes('key not valid')
+  ) {
+    return { kind: 'non-retryable-provider', message: 'Invalid model configuration or key permissions' };
+  }
+
+  return { kind: 'invalid-output', message: msg || 'Model output processing failure' };
+}
+
+/**
+ * Gemini JSON caller with strict failure classification and dual-key failover logic
  */
 async function callGeminiJson<T>(
   prompt: string,
@@ -56,11 +152,12 @@ async function callGeminiJson<T>(
   primaryKey: string,
   secondaryKey: string,
   modelName: string,
-  responseSchema?: Record<string, unknown>
+  responseSchema?: Record<string, unknown>,
+  customValidator?: (val: T) => void
 ): Promise<GeminiCallResult<T>> {
   const tryCall = async (apiKey: string): Promise<T> => {
     const ai = new GoogleGenAI({ apiKey });
-    const response = await ai.models.generateContent({
+    const apiPromise = ai.models.generateContent({
       model: modelName,
       contents: prompt,
       config: {
@@ -69,17 +166,27 @@ async function callGeminiJson<T>(
       },
     });
 
+    const response = await withTimeout(apiPromise);
     const text = response.text || '';
+
+    if (!text.trim()) {
+      throw { kind: 'invalid-output', message: 'Empty model response text' } as CategorizedError;
+    }
+
     let rawJson: unknown;
     try {
       rawJson = JSON.parse(text);
     } catch {
-      throw new Error('Malformed JSON output');
+      throw { kind: 'invalid-output', message: 'JSON parsing failure' } as CategorizedError;
     }
 
     const parsed = schema.safeParse(rawJson);
     if (!parsed.success) {
-      throw new Error('Schema validation failed');
+      throw { kind: 'invalid-output', message: 'Zod schema validation failure' } as CategorizedError;
+    }
+
+    if (customValidator) {
+      customValidator(parsed.data);
     }
 
     return parsed.data;
@@ -89,18 +196,27 @@ async function callGeminiJson<T>(
   try {
     const data = await tryCall(primaryKey);
     return { data, usedFallback: false };
-  } catch {
-    // 2. Retry once using Secondary Key
-    try {
-      const data = await tryCall(secondaryKey);
-      return { data, usedFallback: true };
-    } catch {
-      // 6. Throw sanitized PipelineError if both keys fail
-      throw new PipelineError(
-        stage,
-        `Gemini provider execution failed during ${stage} across both primary and secondary keys.`
-      );
+  } catch (primaryErr) {
+    const categorized = classifyError(primaryErr);
+
+    // Fallback ONLY for retryable provider errors
+    if (categorized.kind === 'retryable-provider') {
+      try {
+        const data = await tryCall(secondaryKey);
+        return { data, usedFallback: true };
+      } catch {
+        throw new PipelineError(
+          stage,
+          `Gemini service failed during ${stage} across both primary and secondary keys.`
+        );
+      }
     }
+
+    // Non-retryable provider error or invalid output -> fail immediately without fallback
+    throw new PipelineError(
+      stage,
+      `Gemini service execution failed during ${stage}.`
+    );
   }
 }
 
@@ -128,7 +244,7 @@ Task: Extract EXACTLY 3 atomic, specific, independently verifiable, important cl
 For each claim, generate a target search query to find supporting evidence (supportQuery) and a target search query to find challenging/opposing evidence (challengeQuery).
 
 Do NOT include citations, URLs, or external markdown in any field.
-Respond ONLY with a JSON array of EXACTLY 3 objects containing "text", "supportQuery", and "challengeQuery".`;
+Respond ONLY with a JSON array of EXACTLY 3 objects matching the schema.`;
 
   const responseSchema = {
     type: Type.ARRAY,
@@ -143,6 +259,20 @@ Respond ONLY with a JSON array of EXACTLY 3 objects containing "text", "supportQ
     },
   };
 
+  // Custom validator to normalize strings & reject duplicate claims
+  const validateAndNormalizeClaims = (claims: ExtractedClaim[]) => {
+    for (const c of claims) {
+      c.text = c.text.replace(/\s+/g, ' ').trim();
+      c.supportQuery = c.supportQuery.replace(/\s+/g, ' ').trim();
+      c.challengeQuery = c.challengeQuery.replace(/\s+/g, ' ').trim();
+    }
+
+    const uniqueNormalized = new Set(claims.map((c) => c.text.toLowerCase()));
+    if (uniqueNormalized.size !== 3) {
+      throw { kind: 'invalid-output', message: 'Model returned duplicate claims' } as CategorizedError;
+    }
+  };
+
   return callGeminiJson(
     prompt,
     'claim-extraction',
@@ -150,7 +280,8 @@ Respond ONLY with a JSON array of EXACTLY 3 objects containing "text", "supportQ
     primaryKey,
     secondaryKey,
     modelName,
-    responseSchema
+    responseSchema,
+    validateAndNormalizeClaims
   );
 }
 
@@ -183,7 +314,7 @@ Evaluate the claim ONLY using the supplied evidence sources above.
 1. Determine verdict: "supported", "contradicted", "partial", or "insufficient".
 2. Assign a confidence score from 0 to 100.
 3. Provide a concise 1-2 sentence explanation of the reasoning.
-4. List the evidence sources evaluated. Each item in the "evidence" array MUST contain: "sourceId" (the exact source ID string like c1-ev-s-1), "stance" ("support", "contradict", or "neutral"), and "relevanceScore" (number 0 to 100).
+4. List the evidence sources evaluated. Each item in the "evidence" array MUST contain: "sourceId" (exact source ID string like c1-ev-s-1), "stance" ("support", "contradict", or "neutral"), and "relevanceScore" (number 0 to 100).
 Do not assume a challenge candidate source is automatically contradictory; classify its actual stance.
 Do not reference any source ID that is not listed in the retrieved evidence sources above.
 Respond ONLY with JSON containing "verdict", "confidence", "explanation", and "evidence" array.`;
@@ -191,7 +322,10 @@ Respond ONLY with JSON containing "verdict", "confidence", "explanation", and "e
   const verificationResponseSchema = {
     type: Type.OBJECT,
     properties: {
-      verdict: { type: Type.STRING },
+      verdict: {
+        type: Type.STRING,
+        enum: ['supported', 'contradicted', 'partial', 'insufficient'],
+      },
       confidence: { type: Type.NUMBER },
       explanation: { type: Type.STRING },
       evidence: {
@@ -200,7 +334,10 @@ Respond ONLY with JSON containing "verdict", "confidence", "explanation", and "e
           type: Type.OBJECT,
           properties: {
             sourceId: { type: Type.STRING },
-            stance: { type: Type.STRING },
+            stance: {
+              type: Type.STRING,
+              enum: ['support', 'contradict', 'neutral'],
+            },
             relevanceScore: { type: Type.NUMBER },
           },
           required: ['sourceId', 'stance', 'relevanceScore'],
@@ -220,11 +357,8 @@ Respond ONLY with JSON containing "verdict", "confidence", "explanation", and "e
     verificationResponseSchema
   );
 
-  const vLower = parsed.verdict.toLowerCase();
-  let rawVerdict: ClaimVerdict = 'insufficient';
-  if (vLower.includes('support')) rawVerdict = 'supported';
-  else if (vLower.includes('contradict')) rawVerdict = 'contradicted';
-  else if (vLower.includes('partial')) rawVerdict = 'partial';
+  // Strict validated Enum values used directly
+  const rawVerdict: ClaimVerdict = parsed.verdict;
 
   const candidateMap = new Map<string, CandidateEvidence>();
   for (const item of candidateEvidence) {
@@ -232,22 +366,27 @@ Respond ONLY with JSON containing "verdict", "confidence", "explanation", and "e
   }
 
   const verifiedEvidence: Evidence[] = [];
+  const seenSourceIds = new Set<string>();
+  const seenUrls = new Set<string>();
 
   for (const rawEv of parsed.evidence) {
-    const sId = rawEv.sourceId || rawEv.id;
-    if (!sId) continue;
+    const sId = rawEv.sourceId;
+    if (!sId || seenSourceIds.has(sId)) continue;
     const candidate = candidateMap.get(sId);
     if (!candidate) continue;
 
-    const rawRel = rawEv.relevanceScore ?? rawEv.relevance ?? 0;
-    const relScoreClamped = Math.max(0, Math.min(100, rawRel));
-    if (relScoreClamped < 40) continue;
+    // Deduplicate by URL as well
+    const canonicalUrl = candidate.url.toLowerCase().replace(/\/$/, '');
+    if (seenUrls.has(canonicalUrl)) continue;
 
-    const sLower = rawEv.stance.toLowerCase();
-    let mappedStance: ClaimVerdict = 'partial';
-    if (sLower.includes('support')) mappedStance = 'supported';
-    else if (sLower.includes('contradict')) mappedStance = 'contradicted';
-    else if (sLower.includes('neutral')) mappedStance = 'partial';
+    // Exclude evidence with relevanceScore < 40
+    if (rawEv.relevanceScore < 40) continue;
+
+    seenSourceIds.add(sId);
+    seenUrls.add(canonicalUrl);
+
+    // Stance is validated Enum: 'support' | 'contradict' | 'neutral'
+    const stance: EvidenceStance = rawEv.stance;
 
     verifiedEvidence.push({
       id: candidate.id,
@@ -255,24 +394,25 @@ Respond ONLY with JSON containing "verdict", "confidence", "explanation", and "e
       url: candidate.url,
       domain: candidate.domain,
       excerpt: candidate.excerpt,
-      stance: mappedStance,
-      relevanceScore: Math.round(relScoreClamped) / 100,
+      stance,
+      relevanceScore: Math.round(rawEv.relevanceScore) / 100, // Decimal 0..1
     });
   }
 
+  // Rule: No retained evidence means verdict must be "insufficient"
   let finalVerdict: ClaimVerdict = rawVerdict;
   if (verifiedEvidence.length === 0) {
     finalVerdict = 'insufficient';
   }
 
-  const conf = Math.max(0, Math.min(100, parsed.confidence));
   const evidenceCount = verifiedEvidence.length;
   const distinctDomains = new Set(verifiedEvidence.map((e) => e.domain)).size;
   const hasContradiction =
     finalVerdict === 'contradicted' ||
-    verifiedEvidence.some((e) => e.stance === 'contradicted');
+    verifiedEvidence.some((e) => e.stance === 'contradict');
 
-  let cappedConf = conf;
+  // Deterministic Confidence Caps:
+  let cappedConf = parsed.confidence;
   let appliedCap: string | null = null;
 
   if (finalVerdict === 'insufficient') {
@@ -305,7 +445,7 @@ Respond ONLY with JSON containing "verdict", "confidence", "explanation", and "e
       id: `claim-${claimIndex}`,
       text: claimText,
       verdict: finalVerdict,
-      confidence: Math.round(cappedConf) / 100,
+      confidence: Math.round(cappedConf) / 100, // Decimal 0..1
       explanation: parsed.explanation,
       evidence: verifiedEvidence,
       confidenceFactors: {

@@ -106,15 +106,21 @@ export async function runResearchPipeline(query: string): Promise<ResearchPipeli
     insufficientClaims,
   };
 
-  return {
-    run: {
-      id: `run-${Date.now()}`,
-      query,
-      summary,
-      claims: verifiedClaims,
-      metrics,
-      createdAt: new Date().toISOString(),
+  const run: ResearchRun = {
+    id: `run-${Date.now()}`,
+    query,
+    summary,
+    claims: verifiedClaims,
+    metrics,
+    mode: 'live',
+    providerMetadata: {
+      fallbackUsed: usedFallback,
     },
+    createdAt: new Date().toISOString(),
+  };
+
+  return {
+    run,
     usedFallback,
   };
 }

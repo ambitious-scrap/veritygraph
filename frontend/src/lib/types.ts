@@ -1,12 +1,14 @@
 export type ClaimVerdict = 'supported' | 'contradicted' | 'partial' | 'insufficient';
 
+export type EvidenceStance = 'support' | 'contradict' | 'neutral';
+
 export interface Evidence {
   id: string;
   title: string;
   url: string;
   domain: string;
   excerpt: string;
-  stance: ClaimVerdict;
+  stance: EvidenceStance;
   relevanceScore: number;
 }
 
@@ -36,12 +38,18 @@ export interface ResearchMetrics {
   insufficientClaims: number;
 }
 
+export interface ProviderMetadata {
+  fallbackUsed: boolean;
+}
+
 export interface ResearchRun {
   id: string;
   query: string;
   summary: string;
   claims: Claim[];
   metrics: ResearchMetrics;
+  mode: 'live' | 'demo';
+  providerMetadata: ProviderMetadata;
   createdAt: string;
 }
 
