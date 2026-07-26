@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   ShieldCheck,
   CheckCircle2,
@@ -14,13 +14,25 @@ import {
   RefreshCw,
   FileText,
   BarChart2,
+  AlertCircle,
+  Database,
 } from 'lucide-react';
 import { MOCK_RESEARCH_RUN } from '@/lib/mockData';
 import { Claim, ClaimVerdict, ResearchRun } from '@/lib/types';
 
+const STAGES = [
+  'Searching sources',
+  'Extracting claims',
+  'Challenging claims',
+  'Verifying evidence',
+  'Compiling report',
+];
+
 export default function Home() {
   const [query, setQuery] = useState(MOCK_RESEARCH_RUN.query);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [stageIndex, setStageIndex] = useState(0);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [activeRun, setActiveRun] = useState<ResearchRun | null>(MOCK_RESEARCH_RUN);
   const [expandedClaims, setExpandedClaims] = useState<Record<string, boolean>>({
     'claim-1': true,
@@ -29,27 +41,83 @@ export default function Home() {
     'claim-4': true,
   });
 
-  const handleVerify = (e: React.FormEvent) => {
+  // Stage rotator effect while analyzing
+  useEffect(() => {
+    if (!isAnalyzing) return;
+    const interval = setInterval(() => {
+      setStageIndex((prev) => (prev + 1) % STAGES.length);
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [isAnalyzing]);
+
+  const handleVerify = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!query.trim()) return;
+    const trimmed = query.trim();
+    if (!trimmed) return;
+
+    if (trimmed.length < 10) {
+      setErrorMessage('Query must be at least 10 characters long.');
+      return;
+    }
+
+    if (trimmed.length > 500) {
+      setErrorMessage('Query must be at most 500 characters long.');
+      return;
+    }
 
     setIsAnalyzing(true);
-    // Simulate brief processing for demo feel
-    setTimeout(() => {
-      setActiveRun({
-        ...MOCK_RESEARCH_RUN,
-        query: query.trim(),
-        createdAt: new Date().toISOString(),
+    setStageIndex(0);
+    setErrorMessage(null);
+    try {
+      const res = await fetch('/api/research', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: trimmed }),
       });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setErrorMessage(
+          data.error || 'Failed to complete research pipeline execution.'
+        );
+      } else {
+        setActiveRun(data as ResearchRun);
+        // Expand all returned claims by default
+        const newExpanded: Record<string, boolean> = {};
+        if (Array.isArray(data.claims)) {
+          data.claims.forEach((c: Claim) => {
+            newExpanded[c.id] = true;
+          });
+        }
+        setExpandedClaims(newExpanded);
+      }
+    } catch {
+      setErrorMessage('Network error connecting to research verification service.');
+    } finally {
       setIsAnalyzing(false);
-    }, 400);
+    }
   };
 
-  const handleTryExample = () => {
+  // Only populates the textarea
+  const handlePopulateExample = () => {
+    setQuery('Does coffee consumption decrease overall mortality and cardiovascular disease risk?');
+    setErrorMessage(null);
+  };
+
+  // Loads demo mock result directly
+  const handleLoadDemoResult = () => {
     setQuery(MOCK_RESEARCH_RUN.query);
+    setErrorMessage(null);
     setActiveRun({
       ...MOCK_RESEARCH_RUN,
       createdAt: new Date().toISOString(),
+    });
+    setExpandedClaims({
+      'claim-1': true,
+      'claim-2': true,
+      'claim-3': true,
+      'claim-4': true,
     });
   };
 
@@ -105,9 +173,11 @@ export default function Home() {
     activeRun?.claims.filter((c) => c.verdict === 'insufficient').length || 0;
   const avgConfidence = totalClaims
     ? Math.round(
-        (activeRun!.claims.reduce((acc, c) => acc + c.confidence, 0) /
-          totalClaims) *
-          100
+        (activeRun!.claims.reduce(
+          (acc, c) => acc + (c.confidence > 1 ? c.confidence : c.confidence * 100),
+          0
+        ) /
+          totalClaims)
       )
     : 0;
 
@@ -131,7 +201,7 @@ export default function Home() {
           </div>
           <div className="flex items-center gap-2">
             <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-700 border border-slate-200">
-              MVP Shell v0.1
+              Live Pipeline v1.0
             </span>
           </div>
         </div>
@@ -160,20 +230,34 @@ export default function Home() {
                 rows={3}
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
+                disabled={isAnalyzing}
                 placeholder="e.g. Does daily creatine monohydrate supplementation improve cognitive performance in elderly adults?"
-                className="w-full rounded-lg border border-slate-300 p-3.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-transparent resize-none font-medium"
+                className="w-full rounded-lg border border-slate-300 p-3.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-transparent resize-none font-medium disabled:opacity-60"
               />
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-              <button
-                type="button"
-                onClick={handleTryExample}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-md transition-colors"
-              >
-                <RefreshCw className="w-3.5 h-3.5" />
-                Try Example Query
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handlePopulateExample}
+                  disabled={isAnalyzing}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-md transition-colors disabled:opacity-50"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  Try Example Query
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleLoadDemoResult}
+                  disabled={isAnalyzing}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-md transition-colors disabled:opacity-50"
+                >
+                  <Database className="w-3.5 h-3.5" />
+                  Load Demo Result
+                </button>
+              </div>
 
               <button
                 type="submit"
@@ -183,7 +267,7 @@ export default function Home() {
                 {isAnalyzing ? (
                   <>
                     <RefreshCw className="w-4 h-4 animate-spin" />
-                    Verifying Claims...
+                    <span>{STAGES[stageIndex]}...</span>
                   </>
                 ) : (
                   <>
@@ -195,6 +279,17 @@ export default function Home() {
             </div>
           </form>
         </section>
+
+        {/* Error Banner */}
+        {errorMessage && (
+          <div className="bg-rose-50 border border-rose-200 rounded-xl p-4 flex items-start gap-3 text-rose-800 text-sm">
+            <AlertCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <span className="font-semibold block">Research Pipeline Error</span>
+              <span>{errorMessage}</span>
+            </div>
+          </div>
+        )}
 
         {/* Results Area */}
         {activeRun && (
@@ -289,6 +384,9 @@ export default function Home() {
               <div className="space-y-4">
                 {activeRun.claims.map((claim: Claim) => {
                   const isExpanded = !!expandedClaims[claim.id];
+                  const confidenceDisplay = Math.round(
+                    claim.confidence > 1 ? claim.confidence : claim.confidence * 100
+                  );
                   return (
                     <article
                       key={claim.id}
@@ -300,7 +398,7 @@ export default function Home() {
                           <div className="flex items-center gap-2">
                             {getVerdictBadge(claim.verdict)}
                             <span className="text-xs font-medium text-slate-500">
-                              Confidence: {Math.round(claim.confidence * 100)}%
+                              Confidence: {confidenceDisplay}%
                             </span>
                           </div>
                           <button
@@ -342,37 +440,50 @@ export default function Home() {
                           <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
                             Supporting & Contradicting Evidence ({claim.evidence.length})
                           </h4>
-                          <div className="space-y-3">
-                            {claim.evidence.map((ev) => (
-                              <div
-                                key={ev.id}
-                                className="bg-white border border-slate-200 rounded-lg p-4 space-y-2 text-sm"
-                              >
-                                <div className="flex flex-wrap items-center justify-between gap-2">
-                                  <a
-                                    href={ev.url}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="font-semibold text-slate-900 hover:text-blue-600 inline-flex items-center gap-1.5 hover:underline"
+                          {claim.evidence.length === 0 ? (
+                            <p className="text-xs text-slate-500 italic">
+                              No external evidence met the relevance threshold for this claim.
+                            </p>
+                          ) : (
+                            <div className="space-y-3">
+                              {claim.evidence.map((ev) => {
+                                const relDisplay = Math.round(
+                                  ev.relevanceScore > 1
+                                    ? ev.relevanceScore
+                                    : ev.relevanceScore * 100
+                                );
+                                return (
+                                  <div
+                                    key={ev.id}
+                                    className="bg-white border border-slate-200 rounded-lg p-4 space-y-2 text-sm"
                                   >
-                                    {ev.title}
-                                    <ExternalLink className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                                  </a>
-                                  <div className="flex items-center gap-2 text-xs">
-                                    <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-mono">
-                                      {ev.domain}
-                                    </span>
-                                    <span className="text-slate-500 font-medium">
-                                      Relevance: {Math.round(ev.relevanceScore * 100)}%
-                                    </span>
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                      <a
+                                        href={ev.url}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="font-semibold text-slate-900 hover:text-blue-600 inline-flex items-center gap-1.5 hover:underline"
+                                      >
+                                        {ev.title}
+                                        <ExternalLink className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                                      </a>
+                                      <div className="flex items-center gap-2 text-xs">
+                                        <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-mono">
+                                          {ev.domain}
+                                        </span>
+                                        <span className="text-slate-500 font-medium">
+                                          Relevance: {relDisplay}%
+                                        </span>
+                                      </div>
+                                    </div>
+                                    <blockquote className="text-xs text-slate-700 italic bg-slate-50 border-l-2 border-slate-300 p-2.5 rounded-r">
+                                      &quot;{ev.excerpt}&quot;
+                                    </blockquote>
                                   </div>
-                                </div>
-                                <blockquote className="text-xs text-slate-700 italic bg-slate-50 border-l-2 border-slate-300 p-2.5 rounded-r">
-                                  &quot;{ev.excerpt}&quot;
-                                </blockquote>
-                              </div>
-                            ))}
-                          </div>
+                                );
+                              })}
+                            </div>
+                          )}
                         </div>
                       )}
                     </article>
@@ -388,7 +499,7 @@ export default function Home() {
       <footer className="border-t border-slate-200 bg-white py-4 mt-auto">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 flex items-center justify-between text-xs text-slate-500">
           <span>VerityGraph MVP — Evidence-First Multi-Agent Research System</span>
-          <span>Next.js App Router Shell</span>
+          <span>Live Verification Engine</span>
         </div>
       </footer>
     </div>
