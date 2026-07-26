@@ -168,9 +168,10 @@ async function callGeminiJson<T>(
   const tryCall = async (apiKey: string): Promise<T> => {
     let text = '';
     if (apiKey.startsWith('sk-or-v1-')) {
-      const targetModel = modelName.includes('/') ? modelName : `google/${modelName}`;
+      const targetModel = modelName.includes('/')
+        ? modelName
+        : 'google/gemini-2.5-flash';
       const resPromise = fetchWithTimeout('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
         headers: {
           Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
