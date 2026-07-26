@@ -21,6 +21,7 @@ import {
   Layers,
   FileCode,
   Download,
+  ArrowRight,
   Copy,
   Check,
   Cpu,
@@ -55,6 +56,19 @@ function confColor(pct: number) {
 
 function pct(v: number) {
   return Math.round(v > 1 ? v : v * 100);
+}
+
+function summaryPoints(summary: string) {
+  const points = summary
+    .split(/(?<=[.!?])\s+/)
+    .map((point) => point.trim())
+    .filter(Boolean)
+    .slice(0, 3);
+  return points.length ? points : [summary.trim()];
+}
+
+function claimDigestText(claim: Claim) {
+  return claim.explanation.replace(/\s+/g, ' ').trim();
 }
 
 const verdictCfg: Record<ClaimVerdict, { bg: string; fg: string; icon: React.ReactNode; label: string }> = {
@@ -157,9 +171,8 @@ export default function Home() {
       if (!res.ok) { setError({ message: data.error || 'Pipeline failed.', stage: data.stage || 'pipeline' }); }
       else {
         setRun(data as ResearchRun);
-        const o: Record<string, boolean> = {};
-        data.claims?.forEach((c: Claim) => { o[c.id] = true; });
-        setOpen(o);
+        setOpen({});
+        setWhyOpen({});
       }
     } catch { setError({ message: 'Network error.', stage: 'connection' }); }
     finally { setIsAnalyzing(false); }
@@ -177,7 +190,8 @@ export default function Home() {
     setQuery(MOCK_RESEARCH_RUN.query);
     setError(null);
     setRun({ ...MOCK_RESEARCH_RUN, createdAt: new Date().toISOString() });
-    setOpen({ 'claim-1': true, 'claim-2': true, 'claim-3': true, 'claim-4': true });
+    setOpen({});
+    setWhyOpen({});
   };
 
   const toggle = (id: string) => setOpen((p) => ({ ...p, [id]: !p[id] }));
@@ -267,93 +281,123 @@ export default function Home() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-8 sm:py-10 flex-1 w-full">
-        <section className="grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-8 items-start mb-7">
-          <div className="lg:col-span-7 anim-in">
-            <div className="inline-flex items-center gap-2 rounded-full px-3 py-1 mb-5"
-                 style={{ color: 'var(--accent-text)', background: 'var(--accent-dim)', border: '1px solid oklch(0.34 0.08 30)' }}>
-              <Cpu className="w-3.5 h-3.5" />
-              <span className="text-[11px] font-bold">Evidence checker for research and AI answers</span>
-            </div>
-            <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold tracking-tight leading-[0.96] max-w-3xl"
-                style={{ color: 'var(--ink)', letterSpacing: '-0.055em' }}>
-              Make every claim carry its evidence.
-            </h1>
-            <p className="text-base sm:text-lg leading-relaxed mt-5 max-w-2xl" style={{ color: 'var(--ink-2)' }}>
-              Turn a research query or AI answer into a clear evidence trail: atomic claims, source passages, confidence, and a build result you can inspect.
-            </p>
+        <section aria-labelledby="landing-title" className="max-w-5xl mx-auto text-center mb-14 anim-in">
+          <div className="inline-flex items-center gap-2 rounded-full px-3 py-1 mb-5"
+               style={{ color: 'var(--accent-text)', background: 'var(--accent-dim)', border: '1px solid oklch(0.34 0.08 30)' }}>
+            <Cpu className="w-3.5 h-3.5" />
+            <span className="text-[11px] font-bold">Evidence checker for research and AI answers</span>
+          </div>
+          <h1 id="landing-title" className="text-4xl sm:text-6xl lg:text-7xl font-bold tracking-tight leading-[0.96] max-w-4xl mx-auto"
+              style={{ color: 'var(--ink)', letterSpacing: '-0.06em' }}>
+            Make every claim carry its evidence.
+          </h1>
+          <p className="text-base sm:text-lg leading-relaxed mt-5 max-w-2xl mx-auto" style={{ color: 'var(--ink-2)' }}>
+            Turn a research query or AI answer into a clear evidence trail you can inspect, challenge, and share.
+          </p>
+          <div className="flex flex-wrap items-center justify-center gap-2.5 mt-7">
+            <button type="button"
+              onClick={() => { inputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }); inputRef.current?.focus(); }}
+              className="inline-flex min-h-11 items-center justify-center gap-2 px-5 py-2.5 text-sm font-semibold rounded-lg tr"
+              style={{ background: 'var(--accent)', color: '#fff' }}>
+              Start verifying <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+            <button type="button" onClick={loadDemo}
+              className="inline-flex min-h-11 items-center justify-center gap-2 px-5 py-2.5 text-sm font-semibold rounded-lg tr"
+              style={{ background: 'var(--bg-raised)', color: 'var(--ink-2)', border: '1px solid var(--border)' }}>
+              <Database className="w-3.5 h-3.5" /> See a demo
+            </button>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-10 text-left">
+            {[
+              ['Understand the claim', 'Break broad answers into checkable statements.'],
+              ['See the evidence', 'Compare supporting and challenging source passages.'],
+              ['Know what to do next', 'Find the missing proof and the next best query.'],
+            ].map(([title, body]) => (
+              <div key={title} className="rounded-xl p-4" style={{ background: 'var(--bg-raised)', border: '1px solid var(--border-subtle)' }}>
+                <span className="text-xs font-bold block" style={{ color: 'var(--ink)' }}>{title}</span>
+                <span className="text-[11px] leading-relaxed block mt-1.5" style={{ color: 'var(--ink-3)' }}>{body}</span>
+              </div>
+            ))}
+          </div>
+        </section>
 
+        <section id="verification-workspace" aria-labelledby="workspace-title" className="max-w-3xl mx-auto mb-8">
+          <div className="flex items-end justify-between gap-4 mb-3">
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--accent-text)', letterSpacing: '0.1em' }}>
+                Verification workspace
+              </p>
+              <h2 id="workspace-title" className="text-2xl sm:text-3xl font-bold tracking-tight mt-1" style={{ color: 'var(--ink)' }}>
+                Run a verification
+              </h2>
+              <p className="text-sm mt-2" style={{ color: 'var(--ink-2)' }}>
+                Start with a research question or paste an AI answer. We will show the result first, then the proof behind it.
+              </p>
+            </div>
+            {run ? <BuildBadge s={run.buildResult.status} /> : (
+              <span className="hidden sm:inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-semibold" style={{ color: 'var(--accent-text)', background: 'var(--accent-dim)' }}>
+                <ShieldCheck className="w-3 h-3" /> Ready
+              </span>
+            )}
           </div>
 
-          <aside className="lg:col-span-5 anim-in" style={{ animationDelay: '80ms' }}>
-            <div className="rounded-2xl p-4 sm:p-5 shadow-2xl" style={{ background: 'var(--bg-raised)', border: '1px solid var(--border)' }}>
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--ink-3)', letterSpacing: '0.1em' }}>
-                  Verification workspace
-                </span>
-                {run ? <BuildBadge s={run.buildResult.status} /> : (
-                  <span className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-semibold" style={{ color: 'var(--accent-text)', background: 'var(--accent-dim)' }}>
-                    <ShieldCheck className="w-3 h-3" /> Ready
-                  </span>
-                )}
-              </div>
-
-              <div className="flex gap-2 mb-3" role="tablist" aria-label="Workflow mode">
-                <button type="button" role="tab" onClick={() => setSelectedMode('research')} aria-selected={selectedMode === 'research'}
-                  className="inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 px-3 py-2 text-[11px] font-bold rounded-md tr"
-                  style={{ background: selectedMode === 'research' ? 'var(--accent-dim)' : 'var(--bg-overlay)', color: selectedMode === 'research' ? 'var(--accent-text)' : 'var(--ink-2)', border: '1px solid var(--border-subtle)' }}>
-                  <Search className="w-3 h-3" /> Research
-                </button>
-                <button type="button" role="tab" onClick={() => setSelectedMode('audit')} aria-selected={selectedMode === 'audit'}
-                  className="inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 px-3 py-2 text-[11px] font-bold rounded-md tr"
-                  style={{ background: selectedMode === 'audit' ? 'var(--accent-dim)' : 'var(--bg-overlay)', color: selectedMode === 'audit' ? 'var(--accent-text)' : 'var(--ink-2)', border: '1px solid var(--border-subtle)' }}>
-                  <Cpu className="w-3 h-3" /> Audit
-                </button>
-              </div>
-
-              <form onSubmit={handleVerify} className="space-y-3">
-                <label htmlFor="research-query" className="block text-xs font-semibold" style={{ color: 'var(--ink)' }}>
-                  {selectedMode === 'audit' ? 'AI answer or report' : 'Research claim or question'}
-                </label>
-                <textarea
-                  ref={inputRef}
-                  id="research-query"
-                  rows={selectedMode === 'audit' ? 5 : 4}
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  disabled={isAnalyzing}
-                  placeholder={selectedMode === 'audit' ? 'Paste the answer or report you want to check...' : 'Enter a claim or question to verify...'}
-                  className="w-full h-32 rounded-lg px-4 py-3 text-sm resize-none overflow-y-auto tr disabled:opacity-40"
-                  style={{ background: 'var(--bg-inset)', color: 'var(--ink)', border: '1px solid var(--border)' }}
-                />
-                <div className="flex flex-wrap gap-2">
-                  <button type="submit" disabled={isAnalyzing || !query.trim()}
-                    className="inline-flex min-h-11 items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-lg disabled:opacity-30 tr"
-                    style={{ background: 'var(--accent)', color: '#fff' }}
-                    onMouseEnter={(e) => { if (!e.currentTarget.disabled) e.currentTarget.style.background = 'var(--accent-hover)'; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--accent)'; }}>
-                    {isAnalyzing ? (
-                      <span className="inline-flex items-center gap-2" aria-live="polite">
-                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                        <span className="text-xs">{STAGES[stageIndex]}</span>
-                      </span>
-                    ) : (
-                      <>{selectedMode === 'audit' ? <Cpu className="w-3.5 h-3.5" /> : <Search className="w-3.5 h-3.5" />} {selectedMode === 'audit' ? 'Audit answer' : 'Verify research'}</>
-                    )}
-                  </button>
-                  <button type="button" onClick={loadExample} disabled={isAnalyzing}
-                    className="inline-flex min-h-11 items-center gap-1 px-3 py-2 text-[11px] font-medium rounded-md disabled:opacity-30 tr"
-                    style={{ background: 'var(--bg-overlay)', color: 'var(--ink-2)', border: '1px solid var(--border-subtle)' }}>
-                    <RefreshCw className="w-3 h-3" /> Use example
-                  </button>
-                  <button type="button" onClick={loadDemo} disabled={isAnalyzing}
-                    className="inline-flex min-h-11 items-center gap-1 px-3 py-2 text-[11px] font-medium rounded-md disabled:opacity-30 tr"
-                    style={{ background: 'var(--bg-overlay)', color: 'var(--ink-2)', border: '1px solid var(--border-subtle)' }}>
-                    <Database className="w-3 h-3" /> Load demo
-                  </button>
-                </div>
-              </form>
+          <div className="rounded-2xl p-4 sm:p-5 shadow-2xl" style={{ background: 'var(--bg-raised)', border: '1px solid var(--border)' }}>
+            <div className="flex gap-2 mb-3" role="tablist" aria-label="Workflow mode">
+              <button type="button" role="tab" onClick={() => setSelectedMode('research')} aria-selected={selectedMode === 'research'}
+                className="inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 px-3 py-2 text-[11px] font-bold rounded-md tr"
+                style={{ background: selectedMode === 'research' ? 'var(--accent-dim)' : 'var(--bg-overlay)', color: selectedMode === 'research' ? 'var(--accent-text)' : 'var(--ink-2)', border: '1px solid var(--border-subtle)' }}>
+                <Search className="w-3 h-3" /> Research
+              </button>
+              <button type="button" role="tab" onClick={() => setSelectedMode('audit')} aria-selected={selectedMode === 'audit'}
+                className="inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 px-3 py-2 text-[11px] font-bold rounded-md tr"
+                style={{ background: selectedMode === 'audit' ? 'var(--accent-dim)' : 'var(--bg-overlay)', color: selectedMode === 'audit' ? 'var(--accent-text)' : 'var(--ink-2)', border: '1px solid var(--border-subtle)' }}>
+                <Cpu className="w-3 h-3" /> Audit
+              </button>
             </div>
-          </aside>
+
+            <form onSubmit={handleVerify} className="space-y-3">
+              <label htmlFor="research-query" className="block text-xs font-semibold" style={{ color: 'var(--ink)' }}>
+                {selectedMode === 'audit' ? 'AI answer or report' : 'Research claim or question'}
+              </label>
+              <textarea
+                ref={inputRef}
+                id="research-query"
+                rows={selectedMode === 'audit' ? 5 : 4}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                disabled={isAnalyzing}
+                placeholder={selectedMode === 'audit' ? 'Paste the answer or report you want to check...' : 'Enter a claim or question to verify...'}
+                className="w-full h-32 rounded-lg px-4 py-3 text-sm resize-none overflow-y-auto tr disabled:opacity-40"
+                style={{ background: 'var(--bg-inset)', color: 'var(--ink)', border: '1px solid var(--border)' }}
+              />
+              <div className="flex flex-wrap gap-2">
+                <button type="submit" disabled={isAnalyzing || !query.trim()}
+                  className="inline-flex min-h-11 items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-lg disabled:opacity-30 tr"
+                  style={{ background: 'var(--accent)', color: '#fff' }}
+                  onMouseEnter={(e) => { if (!e.currentTarget.disabled) e.currentTarget.style.background = 'var(--accent-hover)'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--accent)'; }}>
+                  {isAnalyzing ? (
+                    <span className="inline-flex items-center gap-2" aria-live="polite">
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span className="text-xs">{STAGES[stageIndex]}</span>
+                    </span>
+                  ) : (
+                    <>{selectedMode === 'audit' ? <Cpu className="w-3.5 h-3.5" /> : <Search className="w-3.5 h-3.5" />} {selectedMode === 'audit' ? 'Audit answer' : 'Verify research'}</>
+                  )}
+                </button>
+                <button type="button" onClick={loadExample} disabled={isAnalyzing}
+                  className="inline-flex min-h-11 items-center gap-1 px-3 py-2 text-[11px] font-medium rounded-md disabled:opacity-30 tr"
+                  style={{ background: 'var(--bg-overlay)', color: 'var(--ink-2)', border: '1px solid var(--border-subtle)' }}>
+                  <RefreshCw className="w-3 h-3" /> Use example
+                </button>
+                <button type="button" onClick={loadDemo} disabled={isAnalyzing}
+                  className="inline-flex min-h-11 items-center gap-1 px-3 py-2 text-[11px] font-medium rounded-md disabled:opacity-30 tr"
+                  style={{ background: 'var(--bg-overlay)', color: 'var(--ink-2)', border: '1px solid var(--border-subtle)' }}>
+                  <Database className="w-3 h-3" /> Load demo
+                </button>
+              </div>
+            </form>
+          </div>
         </section>
 
         {error && (
@@ -383,13 +427,13 @@ export default function Home() {
 
 
         {run && (
-          <div className="space-y-5 anim-in">
+          <div className="space-y-6 anim-in">
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg p-3"
                  style={{ background: 'var(--bg-raised)', border: '1px solid var(--border-subtle)' }}>
               <span className="text-[11px] font-bold uppercase tracking-wider" style={{ color: 'var(--ink-3)' }}>
-                {run.workflowMode === 'audit' ? 'AI Answer Audit' : 'Research Verification'}
+                {run.workflowMode === 'audit' ? 'AI answer audit' : 'Research verification'}
               </span>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <button type="button" onClick={() => exportReport('md')}
                   className="inline-flex min-h-11 items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold rounded-md tr"
                   style={{ background: 'var(--bg-overlay)', color: 'var(--ink-2)', border: '1px solid var(--border-subtle)' }}>
@@ -403,43 +447,59 @@ export default function Home() {
               </div>
             </div>
 
-            <section className="rounded-lg p-5"
+            <section aria-labelledby="build-result-title" className="rounded-xl p-5"
                      style={{ background: run.buildResult.status === 'pass' ? 'var(--ok-dim)' : run.buildResult.status === 'warning' ? 'var(--warn-dim)' : 'var(--bad-dim)', border: '1px solid var(--border-subtle)' }}>
-              <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
-                <div className="flex items-center gap-2">
-                  <BuildBadge s={run.buildResult.status} />
-                  <h2 className="text-lg font-bold" style={{ color: 'var(--ink)' }}>{run.buildResult.headline}</h2>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-widest mb-2" style={{ color: 'var(--ink-2)', letterSpacing: '0.1em' }}>
+                    Verification result
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <BuildBadge s={run.buildResult.status} />
+                    <h2 id="build-result-title" className="text-lg font-bold" style={{ color: 'var(--ink)' }}>{run.buildResult.headline}</h2>
+                  </div>
                 </div>
                 <span className="text-[11px] font-mono" style={{ color: 'var(--ink-2)' }}>
-                  {run.buildResult.passedClaims} pass · {run.buildResult.warningClaims} warning · {run.buildResult.failedClaims} fail
+                  {run.buildResult.passedClaims} pass · {run.buildResult.warningClaims} review · {run.buildResult.failedClaims} fail
                 </span>
               </div>
-              <p className="text-sm" style={{ color: 'var(--ink-2)' }}>{run.buildResult.explanation}</p>
+              <p className="text-sm leading-relaxed mt-3 max-w-3xl" style={{ color: 'var(--ink-2)' }}>{run.buildResult.explanation}</p>
             </section>
 
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-              <div className="lg:col-span-8 rounded-lg p-5"
-                   style={{ background: 'var(--bg-raised)', border: '1px solid var(--border-subtle)' }}>
-                <h2 className="text-[10px] font-bold uppercase tracking-widest mb-3"
-                    style={{ color: 'var(--ink-3)', letterSpacing: '0.1em' }}>
-                  Summary
-                </h2>
-                <p className="text-sm leading-relaxed" style={{ color: 'var(--ink)', maxWidth: '70ch' }}>
-                  {run.summary}
+              <section aria-labelledby="brief-title" className="lg:col-span-7 rounded-xl p-5"
+                       style={{ background: 'var(--bg-raised)', border: '1px solid var(--border-subtle)' }}>
+                <p className="text-[10px] font-bold uppercase tracking-widest mb-3" style={{ color: 'var(--ink-3)', letterSpacing: '0.1em' }}>
+                  In brief
                 </p>
-              </div>
+                <h2 id="brief-title" className="text-base font-bold mb-3" style={{ color: 'var(--ink)' }}>
+                  What this run found
+                </h2>
+                <ul className="space-y-2.5 text-sm leading-relaxed" style={{ color: 'var(--ink-2)' }}>
+                  {summaryPoints(run.summary).map((point, index) => (
+                    <li key={`${point}-${index}`} className="flex items-start gap-2.5">
+                      <span className="mt-2 w-1.5 h-1.5 rounded-full shrink-0" style={{ background: 'var(--accent)' }} />
+                      <span>{point}</span>
+                    </li>
+                  ))}
+                </ul>
+                <details className="mt-4 pt-3" style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                  <summary className="cursor-pointer text-[11px] font-semibold" style={{ color: 'var(--accent-text)' }}>
+                    Read the full synthesis
+                  </summary>
+                  <p className="text-xs leading-relaxed mt-3" style={{ color: 'var(--ink-2)' }}>{run.summary}</p>
+                </details>
+              </section>
 
-              <div className="lg:col-span-4 rounded-lg p-5"
-                   style={{ background: 'var(--bg-raised)', border: '1px solid var(--border-subtle)' }}>
+              <section aria-labelledby="metrics-title" className="lg:col-span-5 rounded-xl p-5"
+                       style={{ background: 'var(--bg-raised)', border: '1px solid var(--border-subtle)' }}>
                 <div className="flex items-center justify-between mb-3">
-                  <h2 className="text-[10px] font-bold uppercase tracking-widest"
-                      style={{ color: 'var(--ink-3)', letterSpacing: '0.1em' }}>
-                    Metrics
+                  <h2 id="metrics-title" className="text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--ink-3)', letterSpacing: '0.1em' }}>
+                    Run metrics
                   </h2>
                   {run.metrics && (
                     <span className="text-[10px] font-mono flex items-center gap-1" style={{ color: 'var(--ink-3)' }}>
-                      <Clock className="w-3 h-3" />
-                      {(run.metrics.durationMs / 1000).toFixed(1)}s
+                      <Clock className="w-3 h-3" /> {(run.metrics.durationMs / 1000).toFixed(1)}s
                     </span>
                   )}
                 </div>
@@ -463,128 +523,130 @@ export default function Home() {
                   <span className="flex items-center gap-1.5"><FileCode className="w-3 h-3" style={{ color: 'var(--ink-3)' }} /><strong className="font-semibold">{run.metrics?.snippetFallbackSources ?? 0}</strong> snippets</span>
                 </div>
                 <div className="flex items-center gap-2 mt-3 pt-3" style={{ borderTop: '1px solid var(--border-subtle)' }}>
-                  {counts.ok > 0 && <span className="flex items-center gap-1 text-[10px] font-semibold" style={{ color: 'var(--ok-text)' }}><CheckCircle2 className="w-3 h-3" />{counts.ok}</span>}
-                  {counts.bad > 0 && <span className="flex items-center gap-1 text-[10px] font-semibold" style={{ color: 'var(--bad-text)' }}><XCircle className="w-3 h-3" />{counts.bad}</span>}
-                  {counts.warn > 0 && <span className="flex items-center gap-1 text-[10px] font-semibold" style={{ color: 'var(--warn-text)' }}><AlertTriangle className="w-3 h-3" />{counts.warn}</span>}
-                  {counts.mute > 0 && <span className="flex items-center gap-1 text-[10px] font-semibold" style={{ color: 'var(--mute-text)' }}><HelpCircle className="w-3 h-3" />{counts.mute}</span>}
+                  {counts.ok > 0 && <span className="flex items-center gap-1 text-[10px] font-semibold" style={{ color: 'var(--ok-text)' }}><CheckCircle2 className="w-3 h-3" />{counts.ok} passed</span>}
+                  {counts.bad > 0 && <span className="flex items-center gap-1 text-[10px] font-semibold" style={{ color: 'var(--bad-text)' }}><XCircle className="w-3 h-3" />{counts.bad} failed</span>}
+                  {counts.warn > 0 && <span className="flex items-center gap-1 text-[10px] font-semibold" style={{ color: 'var(--warn-text)' }}><AlertTriangle className="w-3 h-3" />{counts.warn} review</span>}
+                  {counts.mute > 0 && <span className="flex items-center gap-1 text-[10px] font-semibold" style={{ color: 'var(--mute-text)' }}><HelpCircle className="w-3 h-3" />{counts.mute} unclear</span>}
                 </div>
+              </section>
+            </div>
+          </div>
+        )}
+
+        {run && (
+          <section aria-labelledby="claims-title" className="anim-in">
+            <div className="flex flex-wrap items-end justify-between gap-2 mb-4">
+              <div>
+                <h2 id="claims-title" className="text-lg font-bold" style={{ color: 'var(--ink)' }}>Claims to review</h2>
+                <p className="text-xs mt-1" style={{ color: 'var(--ink-3)' }}>Scan the digest first. Open reasoning or evidence when you need the proof.</p>
               </div>
+              <span className="text-xs font-mono" style={{ color: 'var(--ink-3)' }}>{total} claims</span>
             </div>
 
-            <section>
-              <div className="flex items-baseline gap-2 mb-4">
-                <h2 className="text-sm font-bold" style={{ color: 'var(--ink)' }}>Verified Claims</h2>
-                <span className="text-xs font-mono" style={{ color: 'var(--ink-3)' }}>{total}</span>
-              </div>
+            <div className="space-y-2 stagger">
+              {run.claims.map((claim: Claim) => {
+                const isOpen = !!open[claim.id];
+                const isWhy = !!whyOpen[claim.id];
+                const conf = pct(claim.confidence);
+                return (
+                  <article key={claim.id} className="rounded-lg overflow-hidden anim-in"
+                           style={{ background: 'var(--bg-raised)', border: '1px solid var(--border-subtle)' }}>
+                    <div className="p-4">
+                      <div className="flex flex-wrap items-start gap-2 mb-2">
+                        <Badge v={claim.verdict} />
+                        <BuildBadge s={claim.claimBuildStatus} />
+                        <span className="inline-flex items-center gap-1 text-[11px] font-mono font-medium" style={{ color: 'var(--ink-2)' }}>{conf}% confidence</span>
+                      </div>
 
-              <div className="space-y-2 stagger">
-                {run.claims.map((claim: Claim) => {
-                  const isOpen = !!open[claim.id];
-                  const isWhy = !!whyOpen[claim.id];
-                  const conf = pct(claim.confidence);
-                  return (
-                    <article key={claim.id} className="rounded-lg overflow-hidden anim-in"
-                             style={{ background: 'var(--bg-raised)', border: '1px solid var(--border-subtle)' }}>
-                      <div className="p-4">
-                        <div className="flex flex-wrap items-start gap-2 mb-2">
-                          <Badge v={claim.verdict} />
-                          <BuildBadge s={claim.claimBuildStatus} />
-                          <span className="inline-flex items-center gap-1 text-[11px] font-mono font-medium" style={{ color: 'var(--ink-2)' }}>{conf}%</span>
-                          <span className="text-[11px] font-mono" style={{ color: 'var(--ink-3)' }}>
-                            {claim.sourceIndependence.independentOrigins}/{claim.sourceIndependence.sourceCount} independent origins
-                          </span>
-                        </div>
+                      <h3 className="text-sm font-semibold leading-snug break-words mb-2" style={{ color: 'var(--ink)' }}>
+                        &ldquo;{claim.text}&rdquo;
+                      </h3>
+                      <p className="text-xs leading-relaxed line-clamp-2" style={{ color: 'var(--ink-2)', maxWidth: '65ch' }}>
+                        {claimDigestText(claim)}
+                      </p>
 
-                        <h3 className="text-sm font-semibold leading-snug break-words mb-2" style={{ color: 'var(--ink)' }}>
-                          &ldquo;{claim.text}&rdquo;
-                        </h3>
-                        <p className="text-xs leading-relaxed mb-3" style={{ color: 'var(--ink-2)', maxWidth: '65ch' }}>
-                          {claim.explanation}
-                        </p>
+                      <div className="flex flex-wrap items-center gap-2 mt-3">
+                        <button type="button" onClick={() => toggleWhy(claim.id)} aria-expanded={isWhy} aria-controls={`reasoning-${claim.id}`}
+                          className="inline-flex min-h-11 items-center gap-1 text-[11px] font-semibold tr rounded px-2"
+                          style={{ color: 'var(--accent-text)', background: 'var(--accent-dim)' }}>
+                          {isWhy ? <><ChevronUp className="w-3 h-3" /> Hide reasoning</> : <><Info className="w-3 h-3" /> Read reasoning</>}
+                        </button>
+                        <button type="button" onClick={() => toggle(claim.id)} aria-expanded={isOpen} aria-controls={`evidence-${claim.id}`}
+                          className="inline-flex min-h-11 items-center gap-1 text-[11px] font-semibold tr rounded px-2"
+                          style={{ color: 'var(--ink-2)', background: 'var(--bg-overlay)', border: '1px solid var(--border-subtle)' }}>
+                          {isOpen ? <><ChevronUp className="w-3 h-3" /> Hide the evidence</> : <><ChevronDown className="w-3 h-3" /> Read the evidence ({claim.evidence.length})</>}
+                        </button>
+                      </div>
 
-                        <div className="rounded-md p-3 mb-3 text-[11px] space-y-2"
+                      {isWhy && (
+                        <div id={`reasoning-${claim.id}`} className="mt-3 rounded-md p-3 text-[11px] space-y-3 anim-in"
                              style={{ background: 'var(--bg-inset)', border: '1px solid var(--border-subtle)' }}>
                           <p style={{ color: 'var(--ink-2)' }}>
-                            <strong style={{ color: 'var(--ink)' }}>What would change this verdict?</strong> {claim.missingEvidence}
+                            <strong style={{ color: 'var(--ink)' }}>What would change this?</strong> {claim.missingEvidence}
                           </p>
                           <div className="flex flex-wrap items-center gap-2">
-                            <span className="font-mono break-all" style={{ color: 'var(--ink-3)' }}>{claim.nextBestQuery}</span>
+                            <span className="font-mono break-all" style={{ color: 'var(--ink-3)' }}>Next search: {claim.nextBestQuery}</span>
                             <button type="button" onClick={() => copyNextQuery(claim.id, claim.nextBestQuery)}
-                              className="inline-flex items-center gap-1 px-2 py-1 rounded tr"
+                              className="inline-flex min-h-11 items-center gap-1 px-2.5 py-1 rounded tr"
                               style={{ background: 'var(--bg-overlay)', color: 'var(--ink-2)', border: '1px solid var(--border-subtle)' }}>
                               <Copy className="w-3 h-3" /> {copied === claim.id ? 'Copied' : 'Copy query'}
                             </button>
                           </div>
-                        </div>
-
-                        <div className="flex items-center gap-3">
-                          <button type="button" onClick={() => toggle(claim.id)} aria-expanded={isOpen}
-                            className="inline-flex items-center gap-1 text-[11px] font-semibold tr rounded px-1.5 py-0.5"
-                            style={{ color: 'var(--accent-text)' }}>
-                            {isOpen ? <><ChevronUp className="w-3 h-3" /> Hide evidence</> : <><ChevronDown className="w-3 h-3" /> {claim.evidence.length} source{claim.evidence.length !== 1 ? 's' : ''}</>}
-                          </button>
-                          <button type="button" onClick={() => toggleWhy(claim.id)} aria-expanded={isWhy}
-                            className="inline-flex items-center gap-1 text-[10px] font-medium tr rounded px-1.5 py-0.5"
-                            style={{ color: 'var(--ink-3)' }}>
-                            <Info className="w-3 h-3" /> Why?
-                          </button>
-                        </div>
-
-                        {isWhy && claim.confidenceFactors && (
-                          <div className="mt-3 rounded-md p-3 text-[11px] grid grid-cols-2 sm:grid-cols-4 gap-3 anim-in"
-                               style={{ background: 'var(--bg-inset)', border: '1px solid var(--border-subtle)' }}>
-                            <div><span style={{ color: 'var(--ink-3)' }}>Evidence</span><span className="block font-bold" style={{ color: 'var(--ink)' }}>{claim.confidenceFactors.evidenceCount}</span></div>
-                            <div><span style={{ color: 'var(--ink-3)' }}>Domains</span><span className="block font-bold" style={{ color: 'var(--ink)' }}>{claim.confidenceFactors.distinctDomains}</span></div>
-                            <div><span style={{ color: 'var(--ink-3)' }}>Contradictions</span><span className="block font-bold" style={{ color: claim.confidenceFactors.hasContradiction ? 'var(--bad-text)' : 'var(--ok-text)' }}>{claim.confidenceFactors.hasContradiction ? 'Found' : 'None'}</span></div>
-                            <div><span style={{ color: 'var(--ink-3)' }}>Cap</span><span className="block font-bold truncate" style={{ color: 'var(--ink)' }}>{claim.confidenceFactors.appliedCap || 'None'}</span></div>
-                          </div>
-                        )}
-                      </div>
-
-                      {isOpen && (
-                        <div className="px-4 pb-4 space-y-2 anim-in" style={{ borderTop: '1px solid var(--border-subtle)' }}>
-                          <span className="block pt-3 text-[10px] font-bold uppercase tracking-wider mb-1" style={{ color: 'var(--ink-3)', letterSpacing: '0.08em' }}>
-                            Evidence ({claim.evidence.length})
-                          </span>
-                          {claim.evidence.length === 0 ? (
-                            <p className="text-xs italic" style={{ color: 'var(--ink-3)' }}>No evidence met the relevance threshold.</p>
-                          ) : (
-                            claim.evidence.map((ev) => {
-                              const rel = pct(ev.relevanceScore);
-                              return (
-                                <div key={ev.id} className="rounded-md p-3 space-y-2" style={{ background: 'var(--bg-inset)', border: '1px solid var(--border-subtle)' }}>
-                                  <div className="flex flex-wrap items-center gap-1.5">
-                                    <StanceBadge s={ev.stance} />
-                                    <BasisBadge b={ev.evidenceBasis} />
-                                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded" style={{ background: 'var(--accent-dim)', color: 'var(--accent-text)' }}>
-                                      Origin {ev.originGroupId}
-                                    </span>
-                                    <span className="ml-auto text-[10px] font-mono" style={{ color: 'var(--ink-3)' }}>{rel}%</span>
-                                  </div>
-                                  <div className="flex items-start justify-between gap-2">
-                                    <a href={ev.url} target="_blank" rel="noopener noreferrer" className="text-xs font-semibold inline-flex items-center gap-1 hover:underline break-all tr rounded" style={{ color: 'var(--ink)' }}>
-                                      {ev.title}
-                                      <ExternalLink className="w-3 h-3 shrink-0" style={{ color: 'var(--ink-3)' }} />
-                                    </a>
-                                    <span className="text-[10px] font-mono shrink-0 px-1.5 py-0.5 rounded" style={{ background: 'var(--bg-overlay)', color: 'var(--ink-3)' }}>
-                                      {ev.domain}
-                                    </span>
-                                  </div>
-                                  <p className="text-[11px] leading-relaxed italic rounded px-2.5 py-2" style={{ color: 'var(--ink-2)', background: 'var(--bg)' }}>
-                                    &ldquo;{ev.excerpt}&rdquo;
-                                  </p>
-                                </div>
-                              );
-                            })
+                          {claim.confidenceFactors && (
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-3" style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                              <div><span style={{ color: 'var(--ink-3)' }}>Evidence</span><span className="block font-bold" style={{ color: 'var(--ink)' }}>{claim.confidenceFactors.evidenceCount}</span></div>
+                              <div><span style={{ color: 'var(--ink-3)' }}>Domains</span><span className="block font-bold" style={{ color: 'var(--ink)' }}>{claim.confidenceFactors.distinctDomains}</span></div>
+                              <div><span style={{ color: 'var(--ink-3)' }}>Contradictions</span><span className="block font-bold" style={{ color: claim.confidenceFactors.hasContradiction ? 'var(--bad-text)' : 'var(--ok-text)' }}>{claim.confidenceFactors.hasContradiction ? 'Found' : 'None'}</span></div>
+                              <div><span style={{ color: 'var(--ink-3)' }}>Source origins</span><span className="block font-bold" style={{ color: 'var(--ink)' }}>{claim.sourceIndependence.independentOrigins}/{claim.sourceIndependence.sourceCount}</span></div>
+                            </div>
                           )}
                         </div>
                       )}
-                    </article>
-                  );
-                })}
-              </div>
-            </section>
-          </div>
+                    </div>
+
+                    {isOpen && (
+                      <div id={`evidence-${claim.id}`} className="px-4 pb-4 space-y-2 anim-in" style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                        <span className="block pt-3 text-[10px] font-bold uppercase tracking-wider mb-1" style={{ color: 'var(--ink-3)', letterSpacing: '0.08em' }}>
+                          Evidence ({claim.evidence.length})
+                        </span>
+                        {claim.evidence.length === 0 ? (
+                          <p className="text-xs italic" style={{ color: 'var(--ink-3)' }}>No evidence met the relevance threshold.</p>
+                        ) : (
+                          claim.evidence.map((ev) => {
+                            const rel = pct(ev.relevanceScore);
+                            return (
+                              <div key={ev.id} className="rounded-md p-3 space-y-2" style={{ background: 'var(--bg-inset)', border: '1px solid var(--border-subtle)' }}>
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <StanceBadge s={ev.stance} />
+                                  <BasisBadge b={ev.evidenceBasis} />
+                                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded" style={{ background: 'var(--accent-dim)', color: 'var(--accent-text)' }}>
+                                    Origin {ev.originGroupId}
+                                  </span>
+                                  <span className="ml-auto text-[10px] font-mono" style={{ color: 'var(--ink-3)' }}>{rel}%</span>
+                                </div>
+                                <div className="flex items-start justify-between gap-2">
+                                  <a href={ev.url} target="_blank" rel="noopener noreferrer" className="text-xs font-semibold inline-flex items-center gap-1 hover:underline break-all tr rounded" style={{ color: 'var(--ink)' }}>
+                                    {ev.title}
+                                    <ExternalLink className="w-3 h-3 shrink-0" style={{ color: 'var(--ink-3)' }} />
+                                  </a>
+                                  <span className="text-[10px] font-mono shrink-0 px-1.5 py-0.5 rounded" style={{ background: 'var(--bg-overlay)', color: 'var(--ink-3)' }}>
+                                    {ev.domain}
+                                  </span>
+                                </div>
+                                <p className="text-[11px] leading-relaxed italic rounded px-2.5 py-2" style={{ color: 'var(--ink-2)', background: 'var(--bg)' }}>
+                                  &ldquo;{ev.excerpt}&rdquo;
+                                </p>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    )}
+                  </article>
+                );
+              })}
+            </div>
+          </section>
         )}
       </main>
 

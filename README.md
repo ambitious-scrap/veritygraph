@@ -2,102 +2,182 @@
 
 > **Every claim must earn its evidence.**
 
-An evidence-first verification compiler for research and AI-generated answers. VerityGraph extracts atomic claims, retrieves evidence with Tavily Search and Tavily Extract, verifies each claim with Gemini, and fails unsupported claims with visible proof requirements.
+VerityGraph is an evidence-first verification compiler for research questions and AI-generated answers. It extracts atomic claims, retrieves supporting and challenging sources, verifies each claim, and makes uncertainty visible before a report is exported.
 
----
+[Live demo](https://veritygraph.vercel.app) · [GitHub repository](https://github.com/ambitious-scrap/veritygraph)
 
-## Required API Keys
+## Why VerityGraph?
 
-Configure environment variables in `.env.local` inside `frontend/`:
+AI answers can sound convincing before anyone checks the individual claims. VerityGraph turns an answer into a reviewable evidence trail:
 
-```env
-GEMINI_API_KEY_PRIMARY=your_primary_gemini_api_key
-GEMINI_API_KEY_SECONDARY=your_secondary_gemini_api_key
-GEMINI_MODEL=gemini-3.6-flash
-TAVILY_API_KEY=your_tavily_api_key
+- **Understand the claim** — break broad answers into atomic, checkable statements.
+- **See the evidence** — compare supporting and challenging source passages.
+- **Know what to do next** — surface missing evidence and a recommended follow-up query.
+
+## Features
+
+- Research mode for questions and hypotheses.
+- Audit mode for pasted AI answers or reports.
+- Deterministic demo mode with no API calls.
+- Gemini-powered claim extraction, verification, and synthesis.
+- Tavily Search and Tavily Extract evidence retrieval.
+- Support, contradiction, partial, and insufficient verdicts.
+- Confidence scores with visible heuristic factors.
+- PASS, WARNING, and FAIL verification build results.
+- Source-independence grouping and origin badges.
+- Expandable reasoning and evidence details.
+- Markdown and JSON proof-report exports.
+
+## Tech stack
+
+- [Next.js](https://nextjs.org/) App Router
+- [React](https://react.dev/) and TypeScript
+- [Tailwind CSS](https://tailwindcss.com/)
+- [Google Gemini](https://ai.google.dev/) via `@google/genai`
+- [Tavily Search and Extract](https://tavily.com/)
+- [Zod](https://zod.dev/) for runtime validation
+- [Lucide](https://lucide.dev/) for interface icons
+
+## Getting started
+
+### Prerequisites
+
+- Node.js 20 or newer.
+- A Gemini API key for live research and audit runs.
+- A Tavily API key for live research and audit runs.
+
+### Install
+
+```bash
+cd frontend
+npm install
+cp .env.example .env.local
 ```
 
----
+Add keys to `frontend/.env.local`:
+
+```env
+GEMINI_API_KEY_PRIMARY=
+GEMINI_API_KEY_SECONDARY=
+GEMINI_MODEL=gemini-3.6-flash
+TAVILY_API_KEY=
+```
+
+API keys are read by server-side route handlers and are never exposed to client components.
+
+### Run locally
+
+```bash
+cd frontend
+npm run dev
+```
+
+Open [http://localhost:3000](http://localhost:3000).
+
+The demo path works without API keys. Live Research and Audit runs require valid keys and network access.
 
 ## Workflows
 
-- **Research Mode:** Submit a research question (`mode: "research"`, `query`) and run the full search -> extraction -> verification pipeline.
-- **Audit Mode:** Paste an AI-generated answer or report (`mode: "audit"`, `text`) and verify only claims that appear in the pasted text.
-- **Demo Mode:** Click **Demo** to load deterministic sample data without API calls.
+### Research mode
 
----
+Enter a research question or claim. The pipeline searches for context, extracts three atomic claims, retrieves evidence for each claim, verifies the supplied evidence, and synthesizes a concise report.
 
-## 6-Stage Verification Pipeline
+### Audit mode
 
-1. **Initial Search:** Tavily Advanced Search gathers query context. Audit Mode skips this stage and uses the pasted answer as source text.
-2. **Claim Extraction:** Gemini extracts exactly 3 atomic, factual, check-worthy claims plus support and challenge search queries.
-3. **Evidence Search:** Tavily Basic Search retrieves support and challenge candidates for each claim.
-4. **Focused Extraction:** Tavily Extract reads up to 4 selected URLs per claim. Search snippets remain as fallback when extraction has no usable text.
-5. **Claim Verification:** Gemini evaluates only supplied evidence and returns verdict, confidence, evidence stance, missing evidence, and next-best query.
-6. **Report Synthesis:** Gemini compiles a concise summary without introducing new facts.
+Paste an AI-generated answer or report between 100 and 6,000 characters. VerityGraph extracts and verifies only claims found in the pasted text; it does not add claims from outside the answer.
 
----
+### Demo mode
 
-## Verification Build Status
+Select **See a demo** or **Load demo** to load deterministic sample results without making API calls.
+
+## Verification pipeline
+
+1. **Initial search** — gathers query context with Tavily Advanced Search. Audit mode skips this stage.
+2. **Claim extraction** — Gemini extracts exactly three factual, check-worthy claims and search queries.
+3. **Evidence search** — Tavily Basic Search retrieves support and challenge candidates.
+4. **Focused extraction** — Tavily Extract reads selected source pages; snippets remain a fallback.
+5. **Claim verification** — Gemini evaluates only supplied evidence and returns verdict, confidence, missing evidence, and a next-best query.
+6. **Report synthesis** — Gemini writes a concise summary without introducing new facts.
+
+## Verification build rules
 
 Each claim receives a deterministic build status:
 
-- **PASS:** Supported, confidence >= 70%, and at least 2 independent evidence origins.
-- **WARNING:** Partial support, insufficient evidence above 30%, supported-but-underpowered source independence, or supported confidence below 70%.
-- **FAIL:** Contradicted, or insufficient evidence with confidence <= 30%.
+- **PASS** — supported, confidence at least 70%, and at least two independent evidence origins.
+- **WARNING** — partial support, insufficient evidence above 30%, supported evidence with weak source independence, or supported confidence below 70%.
+- **FAIL** — contradicted, or insufficient evidence with confidence at or below 30%.
 
-Overall build status is calculated from claim statuses: any failed claim fails the build; warnings without failures produce a warning build; otherwise the build passes.
+The overall build fails when any claim fails. A warning without a failure produces a warning build. Otherwise, the build passes.
 
----
+Confidence is a heuristic based on evidence agreement, source diversity, evidence basis, and deterministic caps. It is not a probability of truth.
 
-## Source Independence Heuristic
+## Source independence
 
-VerityGraph keeps duplicate sources visible but groups related origins:
+VerityGraph keeps related sources visible while grouping likely duplicates:
 
 - Canonicalizes URLs.
 - Normalizes domains and titles.
-- Groups near-duplicate titles using token Jaccard similarity >= 0.72.
-- Treats same-domain sources as the same origin unless titles are clearly unrelated.
-- Displays source count, independent origins, duplicate groups, and origin badges.
+- Groups near-duplicate titles with token Jaccard similarity of at least 0.72.
+- Treats same-domain sources as one origin unless titles are clearly unrelated.
+- Shows source counts, independent origins, duplicate groups, and origin badges.
 
----
+## Exports
 
-## Proof-Carrying Report Export
-
-The frontend exports the current run as:
+The current run can be downloaded from the result header:
 
 - `veritygraph-proof-report.md`
 - `veritygraph-proof-report.json`
 
-Exports include workflow mode, build status, executive summary, run metrics, each claim, confidence factors, source independence, missing evidence, recommended next search, and source URLs.
+Exports include the query, workflow mode, build result, synthesis, metrics, claims, confidence factors, source-independence data, missing evidence, recommended next searches, and source URLs.
 
-## Local Setup & Verification
+## Project structure
 
-### 1. Install Dependencies
-```bash
-cd frontend
-npm install
+```text
+.
+├── frontend/
+│   ├── src/app/
+│   │   ├── api/health/       # Health route
+│   │   ├── api/research/     # Research and audit route handler
+│   │   ├── globals.css       # VerityGraph design tokens and motion
+│   │   └── page.tsx          # Landing page, verifier, and results UI
+│   ├── src/lib/
+│   │   ├── gemini.ts         # Gemini extraction, verification, synthesis
+│   │   ├── research.ts       # Six-stage verification pipeline
+│   │   ├── tavily.ts         # Tavily search and extraction helpers
+│   │   └── types.ts          # Shared result contracts
+│   └── package.json
+├── docs/
+│   └── superpowers/          # Design and implementation specifications
+├── sample-data/
+└── README.md
 ```
 
-### 2. Run Local Development Server
-```bash
-npm run dev
-```
-Open [http://localhost:3000](http://localhost:3000) in your browser.
+## Scripts
 
-### 3. Build & Lint Validation
-```bash
-npm run lint
-npm run build
-```
+Run these from `frontend/`:
 
----
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Start the local development server |
+| `npm run lint` | Run ESLint |
+| `npm run build` | Create a production build |
+| `npm run start` | Serve the production build |
 
-## Current MVP Limitations
+## Limitations
 
-- **Web Text & Snippet Scrapes:** Tavily Extract retrieves focused HTML/text passages; full PDF document parsing is not implemented.
-- **Heuristic Confidence:** Confidence scores reflect structural evidence agreement, domain diversity, evidence basis, and caps—not probability of absolute truth.
-- **Heuristic Source Independence:** Origin grouping is deterministic and visible, but it is not a full academic citation graph.
-- **No Replacement for Expert Review:** System outputs assist research workflows and do not replace professional domain expertise.
-- **Source Dependency:** Claim verification fidelity depends strictly on web pages retrieved during Tavily search and extract stages.
-- **No Persistent Database:** Results are calculated on demand; persistent history storage is not included in this shell.
+- Full PDF parsing is not implemented.
+- Confidence and source independence are deterministic heuristics, not a citation graph or probability model.
+- Results are calculated on demand; there is no persistent history database.
+- Verification depends on pages returned by Tavily Search and Extract.
+- Outputs assist research workflows and do not replace expert review.
+
+## Contributing
+
+1. Create a focused branch.
+2. Make the smallest change that improves the verification workflow.
+3. Run `npm run lint`, `npm run build`, and `git diff --check` from `frontend/` or the repository root as appropriate.
+4. Explain behavior changes and verification evidence in the pull request.
+
+## License
+
+No license file has been added yet. All rights remain with the repository owner until a license is published.
