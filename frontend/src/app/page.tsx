@@ -150,7 +150,7 @@ export default function Home() {
   const [copied, setCopied] = useState<string | null>(null);
   const [demoIndex, setDemoIndex] = useState(0);
   const [isDemoCycling, setIsDemoCycling] = useState(false);
-  const [prefersReducedMotion, setPrefersReducedMotion] = useState(() => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const applyDemo = useCallback((index: number) => {
@@ -171,8 +171,12 @@ export default function Home() {
       setPrefersReducedMotion(media.matches);
       if (media.matches) setIsDemoCycling(false);
     };
+    const initialSync = window.setTimeout(update, 0);
     media.addEventListener('change', update);
-    return () => media.removeEventListener('change', update);
+    return () => {
+      window.clearTimeout(initialSync);
+      media.removeEventListener('change', update);
+    };
   }, []);
   useEffect(() => {
     if (!isDemoCycling || prefersReducedMotion) return;
@@ -225,6 +229,11 @@ export default function Home() {
   const loadDemo = () => applyDemo(demoIndex);
   const previousDemo = () => applyDemo(demoIndex - 1);
   const nextDemo = () => applyDemo(demoIndex + 1);
+  const toggleDemoCycling = () => {
+    if (prefersReducedMotion) return;
+    if (!isDemoCycling && !run) applyDemo(demoIndex);
+    setIsDemoCycling((current) => !current);
+  };
 
   const toggle = (id: string) => setOpen((p) => ({ ...p, [id]: !p[id] }));
   const toggleWhy = (id: string) => setWhyOpen((p) => ({ ...p, [id]: !p[id] }));
@@ -237,6 +246,7 @@ export default function Home() {
 
   const reverifyClaim = async (claim: Claim) => {
     if (reverifying[claim.id]) return;
+    const sourceRunId = run?.id;
     setReverifying((current) => ({ ...current, [claim.id]: true }));
     setError(null);
     try {
@@ -263,7 +273,7 @@ export default function Home() {
         manifestPatch: { generatedAt: string; evidenceCount: number; focusedExtractCount: number; snippetFallbackCount: number };
       };
       setRun((current) => {
-        if (!current) return current;
+        if (!current || !sourceRunId || current.id !== sourceRunId) return current;
         const claims = current.claims.map((item) => item.id === result.claim.id ? { ...result.claim, sourceQuote: item.sourceQuote, auditAnchor: item.auditAnchor } : item);
         const evidence = claims.reduce((count, item) => count + item.evidence.length, 0);
         const focused = claims.reduce((count, item) => count + item.evidence.filter((item) => item.evidenceBasis === 'focused-source-extract').length, 0);
@@ -551,7 +561,7 @@ export default function Home() {
                       style={{ color: 'var(--ink-2)', background: 'var(--bg-overlay)', border: '1px solid var(--border-subtle)' }}>
                       <ChevronRight className="w-3.5 h-3.5" />
                     </button>
-                    <button type="button" onClick={() => setIsDemoCycling((current) => !current)} disabled={prefersReducedMotion}
+                    <button type="button" onClick={toggleDemoCycling} disabled={prefersReducedMotion}
                       aria-label={prefersReducedMotion ? 'Auto-cycle disabled because reduced motion is enabled' : isDemoCycling ? 'Pause demo cycle' : 'Start demo cycle'}
                       className="inline-flex min-h-8 items-center gap-1.5 px-2.5 rounded-md text-[10px] font-semibold tr disabled:opacity-40"
                       style={{ color: isDemoCycling ? 'var(--accent-text)' : 'var(--ink-2)', background: isDemoCycling ? 'var(--accent-dim)' : 'var(--bg-overlay)', border: '1px solid var(--border-subtle)' }}>
