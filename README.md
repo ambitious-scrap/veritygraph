@@ -2,19 +2,23 @@
 
 > **Every claim must earn its evidence.**
 
-An evidence-first multi-agent research system that extracts atomic claims from complex research topics, retrieves real literature via Tavily, and evaluates each claim with Gemini using deterministic support/contradiction verdicts and confidence scoring before compiling a final report.
+An evidence-first multi-agent research system that extracts atomic claims from complex research topics, retrieves real literature via Tavily, and evaluates each claim using Google Gemini SDK with automatic dual-key fallback, deterministic support/contradiction verdicts, and confidence scoring before compiling a final report.
 
 ---
 
 ## Required API Keys
 
-Create `.env.local` inside `frontend/` (or set environment variables):
+Create `.env.local` inside `frontend/`:
 
 ```env
-GEMINI_API_KEY=your_gemini_api_key_here
+GEMINI_API_KEY_PRIMARY=your_primary_gemini_api_key
+GEMINI_API_KEY_SECONDARY=your_secondary_gemini_api_key
 GEMINI_MODEL=gemini-3.6-flash
-TAVILY_API_KEY=your_tavily_api_key_here
+TAVILY_API_KEY=your_tavily_api_key
 ```
+
+### Automatic Key Fallback
+If the primary Gemini key encounters rate limits (429), quota limits, or server errors, the system automatically retries the operation seamlessly using the secondary key.
 
 ---
 
@@ -42,19 +46,6 @@ TAVILY_API_KEY=your_tavily_api_key_here
 └────────────────────────┘
 ```
 
-1. **Initial Research:** Searches Tavily for top 5 relevant web sources.
-2. **Claim Extraction:** Uses Gemini to extract exactly 3 atomic, specific, verifiable claims and constructs targeted `supportQuery` and `challengeQuery` search strings.
-3. **Evidence Search:** Runs parallel support and challenge Tavily searches for each claim, deduplicating candidate evidence items by canonical URL.
-4. **Claim Verification:** Prompts Gemini to evaluate each claim strictly using supplied evidence sources, assigning verdicts (`supported`, `contradicted`, `partial`, `insufficient`), confidence scores, and relevance metrics. Applies deterministic confidence caps based on evidence availability and domain diversity.
-5. **Report Synthesis:** Prompts Gemini to generate a balanced 2–4 sentence executive summary highlighting key findings, contradictions, and evidence limits.
-
----
-
-## Live Research vs. Demo Mode
-
-- **Live Research Mode:** Submits user query to `POST /api/research`, executing the full 5-stage verification pipeline in real time.
-- **Demo Mode:** Click **"Load Demo Result"** on the dashboard to view pre-evaluated verification results for coffee consumption and mortality literature without invoking external APIs.
-
 ---
 
 ## How to Run Locally
@@ -69,7 +60,7 @@ npm install
 ```bash
 cp .env.example .env.local
 ```
-Fill in your `GEMINI_API_KEY` and `TAVILY_API_KEY`.
+Fill in `GEMINI_API_KEY_PRIMARY`, `GEMINI_API_KEY_SECONDARY`, and `TAVILY_API_KEY`.
 
 ### 3. Run Development Server
 ```bash
@@ -77,16 +68,8 @@ npm run dev
 ```
 Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-### 4. Build & Lint Verification
+### 4. Build & Lint
 ```bash
 npm run lint
 npm run build
 ```
-
----
-
-## Current MVP Limitations
-
-- **Source Depth:** Search queries inspect web excerpts; full-text PDF parsing is deferred.
-- **Claim Count:** Fixed at exactly 3 atomic claims per research query for hackathon performance bounds.
-- **Database & Persistence:** Results are generated dynamically; persistent storage is not enabled in this shell.

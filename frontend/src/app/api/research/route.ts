@@ -34,8 +34,17 @@ export async function POST(req: Request) {
       );
     }
 
-    const researchRun = await runResearchPipeline(parsed.data.query);
-    return NextResponse.json(researchRun, { status: 200 });
+    const { run, usedFallback } = await runResearchPipeline(parsed.data.query);
+
+    return NextResponse.json(
+      { ...run, usedFallback },
+      {
+        status: 200,
+        headers: {
+          'X-Gemini-Fallback-Used': usedFallback ? 'true' : 'false',
+        },
+      }
+    );
   } catch (error) {
     if (error instanceof PipelineError) {
       return NextResponse.json(

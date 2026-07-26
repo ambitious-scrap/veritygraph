@@ -1,26 +1,36 @@
 import { getEnv } from './env';
 import { searchInitialSources, searchClaimEvidence } from './tavily';
 import {
-  extractClaimsWithOpenRouter,
-  verifyClaimWithOpenRouter,
-  synthesizeReportWithOpenRouter,
-} from './openrouter';
+  extractClaimsWithGemini,
+  verifyClaimWithGemini,
+  synthesizeReportWithGemini,
+} from './gemini';
 import { ResearchMetrics, ResearchRun } from './types';
 
-export async function runResearchPipeline(query: string): Promise<ResearchRun> {
+export interface ResearchPipelineResult {
+  run: ResearchRun;
+  usedFallback: boolean;
+}
+
+export async function runResearchPipeline(query: string): Promise<ResearchPipelineResult> {
   const startTime = Date.now();
   const env = getEnv();
+
+  let usedFallback = false;
 
   // Stage 1: Initial Research
   const initialSources = await searchInitialSources(query, env.TAVILY_API_KEY);
 
   // Stage 2: Claim Extraction
-  const extractedClaims = await extractClaimsWithOpenRouter(
+  const extractionResult = await extractClaimsWithGemini(
     query,
     initialSources,
-    env.OPENROUTER_API_KEY,
-    env.LLM_MODEL
+    env.GEMINI_API_KEY_PRIMARY,
+    env.GEMINI_API_KEY_SECONDARY,
+    env.GEMINI_MODEL
   );
+  if (extractionResult.usedFallback) usedFallback = true;
+  const extractedClaims = extractionResult.data;
 
   // Stage 3: Evidence Search (Parallel for each claim)
   const evidencePromises = extractedClaims.map((claim, idx) =>
@@ -36,29 +46,37 @@ export async function runResearchPipeline(query: string): Promise<ResearchRun> {
 
   // Stage 4: Claim Verification (Parallel for each claim)
   const verificationPromises = extractedClaims.map((claim, idx) =>
-    verifyClaimWithOpenRouter(
+    verifyClaimWithGemini(
       claim.text,
       idx + 1,
       candidateEvidencePerClaim[idx],
-      env.OPENROUTER_API_KEY,
-      env.LLM_MODEL
+      env.GEMINI_API_KEY_PRIMARY,
+      env.GEMINI_API_KEY_SECONDARY,
+      env.GEMINI_MODEL
     )
   );
 
-  const verifiedClaims = await Promise.all(verificationPromises);
+  const verificationResults = await Promise.all(verificationPromises);
+  const verifiedClaims = verificationResults.map((r) => {
+    if (r.usedFallback) usedFallback = true;
+    return r.claim;
+  });
 
   // Stage 5: Synthesis
-  const summary = await synthesizeReportWithOpenRouter(
+  const synthesisResult = await synthesizeReportWithGemini(
     query,
     verifiedClaims,
-    env.OPENROUTER_API_KEY,
-    env.LLM_MODEL
+    env.GEMINI_API_KEY_PRIMARY,
+    env.GEMINI_API_KEY_SECONDARY,
+    env.GEMINI_MODEL
   );
+  if (synthesisResult.usedFallback) usedFallback = true;
+  const summary = synthesisResult.data;
 
   const durationMs = Date.now() - startTime;
 
-  // Calculate deterministic metrics
-  const allSourcesMap = new Map<string, string>(); // url -> domain
+  // Calculate metrics
+  const allSourcesMap = new Map<string, string>();
   for (const s of initialSources) {
     allSourcesMap.set(s.url, s.domain);
   }
@@ -89,11 +107,14 @@ export async function runResearchPipeline(query: string): Promise<ResearchRun> {
   };
 
   return {
-    id: `run-${Date.now()}`,
-    query,
-    summary,
-    claims: verifiedClaims,
-    metrics,
-    createdAt: new Date().toISOString(),
+    run: {
+      id: `run-${Date.now()}`,
+      query,
+      summary,
+      claims: verifiedClaims,
+      metrics,
+      createdAt: new Date().toISOString(),
+    },
+    usedFallback,
   };
 }

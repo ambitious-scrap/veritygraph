@@ -1,11 +1,17 @@
+import { GoogleGenAI, Type } from '@google/genai';
 import { z } from 'zod';
-import { RawSource, CandidateEvidence, fetchWithTimeout } from './tavily';
+import { RawSource, CandidateEvidence } from './tavily';
 import { Claim, ClaimVerdict, Evidence, PipelineError, PipelineStage } from './types';
 
 export interface ExtractedClaim {
   text: string;
   supportQuery: string;
   challengeQuery: string;
+}
+
+export interface GeminiCallResult<T> {
+  data: T;
+  usedFallback: boolean;
 }
 
 const claimExtractionSchema = z
@@ -40,115 +46,74 @@ const synthesisSchema = z.object({
   summary: z.string().min(1),
 });
 
-const openRouterCompletionSchema = z.object({
-  choices: z
-    .array(
-      z.object({
-        message: z.object({
-          content: z.string().nullable().optional(),
-        }),
-      })
-    )
-    .optional()
-    .default([]),
-});
 /**
- * Unified JSON generation helper using OpenRouter API
+ * Executes a Gemini model call with primary key, falling back to secondary key on failure.
  */
-async function callOpenRouterJson<T>(
+async function callGeminiJson<T>(
   prompt: string,
-  apiKey: string,
-  modelName: string,
   stage: PipelineStage,
-  schema: z.ZodSchema<T>
-): Promise<T> {
-  const targetModel = modelName.includes('/') ? modelName : `google/${modelName}`;
-
-  let res: Response;
-  try {
-    res = await fetchWithTimeout('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
+  schema: z.ZodSchema<T>,
+  primaryKey: string,
+  secondaryKey: string,
+  modelName: string,
+  responseSchema?: Record<string, unknown>
+): Promise<GeminiCallResult<T>> {
+  const tryCall = async (apiKey: string): Promise<T> => {
+    const ai = new GoogleGenAI({ apiKey });
+    const response = await ai.models.generateContent({
+      model: modelName,
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json',
+        ...(responseSchema ? { responseSchema } : {}),
       },
-      body: JSON.stringify({
-        model: targetModel,
-        messages: [{ role: 'user', content: prompt }],
-        response_format: { type: 'json_object' },
-        max_tokens: 2000,
-      }),
     });
-  } catch {
-    throw new PipelineError(
-      stage,
-      `Network failure attempting to reach LLM provider during ${stage}.`
-    );
-  }
 
-  if (!res.ok) {
-    throw new PipelineError(
-      stage,
-      `LLM provider returned HTTP error status (${res.status}) during ${stage}.`
-    );
-  }
+    const text = response.text || '';
+    let rawJson: unknown;
+    try {
+      rawJson = JSON.parse(text);
+    } catch {
+      throw new Error('Malformed JSON output');
+    }
 
-  let data: unknown;
+    const parsed = schema.safeParse(rawJson);
+    if (!parsed.success) {
+      throw new Error('Schema validation failed');
+    }
+
+    return parsed.data;
+  };
+
+  // 1. Try Primary Key
   try {
-    data = await res.json();
+    const data = await tryCall(primaryKey);
+    return { data, usedFallback: false };
   } catch {
-    throw new PipelineError(
-      stage,
-      `Failed to parse JSON response envelope from LLM during ${stage}.`
-    );
+    // 2. Retry once using Secondary Key
+    try {
+      const data = await tryCall(secondaryKey);
+      return { data, usedFallback: true };
+    } catch {
+      // 6. Throw sanitized PipelineError if both keys fail
+      throw new PipelineError(
+        stage,
+        `Gemini provider execution failed during ${stage} across both primary and secondary keys.`
+      );
+    }
   }
-
-  const openRouterParsed = openRouterCompletionSchema.safeParse(data);
-  if (!openRouterParsed.success) {
-    throw new PipelineError(
-      stage,
-      `LLM provider returned malformed response envelope during ${stage}.`
-    );
-  }
-
-  const content = openRouterParsed.data.choices[0]?.message.content;
-
-  if (!content) {
-    throw new PipelineError(
-      stage,
-      `LLM provider returned empty completion content during ${stage}.`
-    );
-  }
-  let rawJson: unknown;
-  try {
-    rawJson = JSON.parse(content);
-  } catch {
-    throw new PipelineError(
-      stage,
-      `LLM provider produced malformed, unparseable JSON during ${stage}.`
-    );
-  }
-
-  const parsed = schema.safeParse(rawJson);
-  if (!parsed.success) {
-    throw new PipelineError(
-      stage,
-      `LLM provider output failed strict schema validation during ${stage}.`
-    );
-  }
-
-  return parsed.data;
 }
 
 /**
- * Stage 2: Claim Extraction
+ * Stage 2: Claim Extraction with Gemini
  */
-export async function extractClaimsWithOpenRouter(
+export async function extractClaimsWithGemini(
   query: string,
   sources: RawSource[],
-  apiKey: string,
+  primaryKey: string,
+  secondaryKey: string,
   modelName: string
-): Promise<ExtractedClaim[]> {
+): Promise<GeminiCallResult<ExtractedClaim[]>> {
   const prompt = `You are a scientific fact-verification system.
 User Query: "${query}"
 
@@ -165,25 +130,41 @@ For each claim, generate a target search query to find supporting evidence (supp
 Do NOT include citations, URLs, or external markdown in any field.
 Respond ONLY with a JSON array of EXACTLY 3 objects containing "text", "supportQuery", and "challengeQuery".`;
 
-  return callOpenRouterJson(
+  const responseSchema = {
+    type: Type.ARRAY,
+    items: {
+      type: Type.OBJECT,
+      properties: {
+        text: { type: Type.STRING },
+        supportQuery: { type: Type.STRING },
+        challengeQuery: { type: Type.STRING },
+      },
+      required: ['text', 'supportQuery', 'challengeQuery'],
+    },
+  };
+
+  return callGeminiJson(
     prompt,
-    apiKey,
-    modelName,
     'claim-extraction',
-    claimExtractionSchema
+    claimExtractionSchema,
+    primaryKey,
+    secondaryKey,
+    modelName,
+    responseSchema
   );
 }
 
 /**
- * Stage 4: Claim Verification
+ * Stage 4: Claim Verification with Gemini
  */
-export async function verifyClaimWithOpenRouter(
+export async function verifyClaimWithGemini(
   claimText: string,
   claimIndex: number,
   candidateEvidence: CandidateEvidence[],
-  apiKey: string,
+  primaryKey: string,
+  secondaryKey: string,
   modelName: string
-): Promise<Claim> {
+): Promise<{ claim: Claim; usedFallback: boolean }> {
   const sourcesList = candidateEvidence
     .map(
       (e) =>
@@ -207,12 +188,36 @@ Do not assume a challenge candidate source is automatically contradictory; class
 Do not reference any source ID that is not listed in the retrieved evidence sources above.
 Respond ONLY with JSON containing "verdict", "confidence", "explanation", and "evidence" array.`;
 
-  const parsed = await callOpenRouterJson(
+  const verificationResponseSchema = {
+    type: Type.OBJECT,
+    properties: {
+      verdict: { type: Type.STRING },
+      confidence: { type: Type.NUMBER },
+      explanation: { type: Type.STRING },
+      evidence: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            sourceId: { type: Type.STRING },
+            stance: { type: Type.STRING },
+            relevanceScore: { type: Type.NUMBER },
+          },
+          required: ['sourceId', 'stance', 'relevanceScore'],
+        },
+      },
+    },
+    required: ['verdict', 'confidence', 'explanation', 'evidence'],
+  };
+
+  const { data: parsed, usedFallback } = await callGeminiJson(
     prompt,
-    apiKey,
-    modelName,
     'verification',
-    rawVerificationSchema
+    rawVerificationSchema,
+    primaryKey,
+    secondaryKey,
+    modelName,
+    verificationResponseSchema
   );
 
   const vLower = parsed.verdict.toLowerCase();
@@ -221,7 +226,6 @@ Respond ONLY with JSON containing "verdict", "confidence", "explanation", and "e
   else if (vLower.includes('contradict')) rawVerdict = 'contradicted';
   else if (vLower.includes('partial')) rawVerdict = 'partial';
 
-  // Filter evidence: match candidate IDs, clamp relevanceScore, filter >= 40
   const candidateMap = new Map<string, CandidateEvidence>();
   for (const item of candidateEvidence) {
     candidateMap.set(item.id, item);
@@ -236,16 +240,15 @@ Respond ONLY with JSON containing "verdict", "confidence", "explanation", and "e
     if (!candidate) continue;
 
     const rawRel = rawEv.relevanceScore ?? rawEv.relevance ?? 0;
-    // Clamp relevanceScore 0..100
     const relScoreClamped = Math.max(0, Math.min(100, rawRel));
     if (relScoreClamped < 40) continue;
 
-    // Map stance to ClaimVerdict
     const sLower = rawEv.stance.toLowerCase();
     let mappedStance: ClaimVerdict = 'partial';
     if (sLower.includes('support')) mappedStance = 'supported';
     else if (sLower.includes('contradict')) mappedStance = 'contradicted';
     else if (sLower.includes('neutral')) mappedStance = 'partial';
+
     verifiedEvidence.push({
       id: candidate.id,
       title: candidate.title,
@@ -257,13 +260,11 @@ Respond ONLY with JSON containing "verdict", "confidence", "explanation", and "e
     });
   }
 
-  // Rule: No evidence means verdict must be "insufficient"
   let finalVerdict: ClaimVerdict = rawVerdict;
   if (verifiedEvidence.length === 0) {
     finalVerdict = 'insufficient';
   }
 
-  // Confidence calculation and deterministic caps
   const conf = Math.max(0, Math.min(100, parsed.confidence));
   const evidenceCount = verifiedEvidence.length;
   const distinctDomains = new Set(verifiedEvidence.map((e) => e.domain)).size;
@@ -300,30 +301,34 @@ Respond ONLY with JSON containing "verdict", "confidence", "explanation", and "e
   }
 
   return {
-    id: `claim-${claimIndex}`,
-    text: claimText,
-    verdict: finalVerdict,
-    confidence: Math.round(cappedConf) / 100,
-    explanation: parsed.explanation,
-    evidence: verifiedEvidence,
-    confidenceFactors: {
-      evidenceCount,
-      distinctDomains,
-      hasContradiction,
-      appliedCap,
+    claim: {
+      id: `claim-${claimIndex}`,
+      text: claimText,
+      verdict: finalVerdict,
+      confidence: Math.round(cappedConf) / 100,
+      explanation: parsed.explanation,
+      evidence: verifiedEvidence,
+      confidenceFactors: {
+        evidenceCount,
+        distinctDomains,
+        hasContradiction,
+        appliedCap,
+      },
     },
+    usedFallback,
   };
 }
 
 /**
- * Stage 5: Synthesis
+ * Stage 5: Synthesis with Gemini
  */
-export async function synthesizeReportWithOpenRouter(
+export async function synthesizeReportWithGemini(
   query: string,
   claims: Claim[],
-  apiKey: string,
+  primaryKey: string,
+  secondaryKey: string,
   modelName: string
-): Promise<string> {
+): Promise<GeminiCallResult<string>> {
   const claimSummary = claims
     .map(
       (c) =>
@@ -343,13 +348,23 @@ Requirements:
 2. Do NOT introduce any new facts or claims not listed above.
 Respond ONLY with a JSON object containing "summary".`;
 
-  const parsed = await callOpenRouterJson(
+  const responseSchema = {
+    type: Type.OBJECT,
+    properties: {
+      summary: { type: Type.STRING },
+    },
+    required: ['summary'],
+  };
+
+  const { data: parsed, usedFallback } = await callGeminiJson(
     prompt,
-    apiKey,
-    modelName,
     'synthesis',
-    synthesisSchema
+    synthesisSchema,
+    primaryKey,
+    secondaryKey,
+    modelName,
+    responseSchema
   );
 
-  return parsed.summary;
+  return { data: parsed.summary, usedFallback };
 }
