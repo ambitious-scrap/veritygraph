@@ -4,6 +4,10 @@ export type EvidenceStance = 'support' | 'contradict' | 'neutral';
 
 export type EvidenceBasis = 'focused-source-extract' | 'search-snippet';
 
+export type VerificationBuildStatus = 'pass' | 'warning' | 'fail';
+
+export type WorkflowMode = 'research' | 'audit';
+
 export interface Evidence {
   id: string;
   title: string;
@@ -13,6 +17,7 @@ export interface Evidence {
   stance: EvidenceStance;
   relevanceScore: number;
   evidenceBasis: EvidenceBasis;
+  originGroupId: string;
 }
 
 export interface ConfidenceFactors {
@@ -20,6 +25,12 @@ export interface ConfidenceFactors {
   distinctDomains: number;
   hasContradiction: boolean;
   appliedCap: string | null;
+}
+
+export interface SourceIndependence {
+  sourceCount: number;
+  independentOrigins: number;
+  duplicateGroups: number;
 }
 
 export interface Claim {
@@ -30,6 +41,10 @@ export interface Claim {
   explanation: string;
   evidence: Evidence[];
   confidenceFactors: ConfidenceFactors;
+  sourceIndependence: SourceIndependence;
+  missingEvidence: string;
+  nextBestQuery: string;
+  claimBuildStatus: VerificationBuildStatus;
 }
 
 export interface ResearchMetrics {
@@ -47,6 +62,15 @@ export interface ProviderMetadata {
   fallbackUsed: boolean;
 }
 
+export interface BuildResult {
+  status: VerificationBuildStatus;
+  headline: string;
+  explanation: string;
+  passedClaims: number;
+  warningClaims: number;
+  failedClaims: number;
+}
+
 export interface ResearchRun {
   id: string;
   query: string;
@@ -54,8 +78,16 @@ export interface ResearchRun {
   claims: Claim[];
   metrics: ResearchMetrics;
   mode: 'live' | 'demo';
+  workflowMode: WorkflowMode;
+  buildResult: BuildResult;
   providerMetadata: ProviderMetadata;
   createdAt: string;
+}
+
+export interface ResearchApiRequest {
+  mode?: WorkflowMode;
+  query?: string;
+  text?: string;
 }
 
 export type PipelineStage =

@@ -13,17 +13,20 @@ import {
   Search,
   RefreshCw,
   FileText,
-  BarChart2,
   AlertCircle,
   Database,
   Info,
   Globe,
   Clock,
   Layers,
-  Sparkles,
   ArrowRight,
   KeyRound,
   FileCode,
+  Download,
+  Copy,
+  Check,
+  Cpu,
+  Minus,
 } from 'lucide-react';
 import { MOCK_RESEARCH_RUN } from '@/lib/mockData';
 import {
@@ -32,7 +35,10 @@ import {
   EvidenceBasis,
   EvidenceStance,
   ResearchRun,
+  VerificationBuildStatus,
+  WorkflowMode,
 } from '@/lib/types';
+/* ── Constants ─────────────────────────────────────────── */
 
 const STAGES = [
   'Searching sources',
@@ -43,263 +49,248 @@ const STAGES = [
   'Compiling report',
 ];
 
+/* ── Helpers ───────────────────────────────────────────── */
+
+function confColor(pct: number) {
+  if (pct >= 80) return 'var(--ok)';
+  if (pct >= 60) return 'var(--warn)';
+  if (pct >= 40) return 'var(--accent)';
+  return 'var(--bad)';
+}
+
+function pct(v: number) {
+  return Math.round(v > 1 ? v : v * 100);
+}
+
+/* ── Component ─────────────────────────────────────────── */
+
 export default function Home() {
+  const [selectedMode, setSelectedMode] = useState<WorkflowMode>('research');
   const [query, setQuery] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [stageIndex, setStageIndex] = useState(0);
-  const [errorDetails, setErrorDetails] = useState<{ message: string; stage?: string } | null>(
-    null
-  );
-  // Initial state: activeRun = null (no auto-display of mock data)
-  const [activeRun, setActiveRun] = useState<ResearchRun | null>(null);
-  const [expandedClaims, setExpandedClaims] = useState<Record<string, boolean>>({});
-  const [expandedWhyScore, setExpandedWhyScore] = useState<Record<string, boolean>>({});
+  const [error, setError] = useState<{ message: string; stage?: string } | null>(null);
+  const [run, setRun] = useState<ResearchRun | null>(null);
+  const [open, setOpen] = useState<Record<string, boolean>>({});
+  const [whyOpen, setWhyOpen] = useState<Record<string, boolean>>({});
+  const [copied, setCopied] = useState<string | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  const queryTextareaRef = useRef<HTMLTextAreaElement>(null);
-
-  // Stage rotator effect while analyzing
+  // Stage rotator
   useEffect(() => {
     if (!isAnalyzing) return;
-    const interval = setInterval(() => {
-      setStageIndex((prev) => (prev + 1) % STAGES.length);
-    }, 2000);
-    return () => clearInterval(interval);
+    const id = setInterval(() => setStageIndex((p) => (p + 1) % STAGES.length), 2000);
+    return () => clearInterval(id);
   }, [isAnalyzing]);
+
+  /* ── Handlers ──────────────────────────────────────── */
 
   const handleVerify = async (e: React.FormEvent) => {
     e.preventDefault();
-    const trimmed = query.trim();
-    if (!trimmed) return;
-
-    if (trimmed.length < 10) {
-      setErrorDetails({
-        message: 'Query must be at least 10 characters long.',
-        stage: 'initial-search',
-      });
-      return;
+    const t = query.trim();
+    if (!t) return;
+    if (selectedMode === 'audit') {
+      if (t.length < 100) { setError({ message: 'Audit text must be at least 100 characters.', stage: 'input' }); return; }
+      if (t.length > 6000) { setError({ message: 'Audit text must be at most 6,000 characters.', stage: 'input' }); return; }
+    } else {
+      if (t.length < 10) { setError({ message: 'Query must be at least 10 characters.', stage: 'input' }); return; }
+      if (t.length > 500) { setError({ message: 'Query must be at most 500 characters.', stage: 'input' }); return; }
     }
-
-    if (trimmed.length > 500) {
-      setErrorDetails({
-        message: 'Query must be at most 500 characters long.',
-        stage: 'initial-search',
-      });
-      return;
-    }
-
-    setIsAnalyzing(true);
-    setStageIndex(0);
-    setErrorDetails(null);
-
+    setIsAnalyzing(true); setStageIndex(0); setError(null);
     try {
       const res = await fetch('/api/research', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: trimmed }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(selectedMode === 'audit' ? { mode: 'audit', text: t } : { mode: 'research', query: t }),
       });
-
       const data = await res.json();
-
-      if (!res.ok) {
-        setErrorDetails({
-          message: data.error || 'Failed to complete research pipeline execution.',
-          stage: data.stage || 'initial-search',
-        });
-      } else {
-        setActiveRun(data as ResearchRun);
-        const newExpanded: Record<string, boolean> = {};
-        if (Array.isArray(data.claims)) {
-          data.claims.forEach((c: Claim) => {
-            newExpanded[c.id] = true;
-          });
-        }
-        setExpandedClaims(newExpanded);
+      if (!res.ok) { setError({ message: data.error || 'Pipeline failed.', stage: data.stage || 'pipeline' }); }
+      else {
+        setRun(data as ResearchRun);
+        const o: Record<string, boolean> = {};
+        data.claims?.forEach((c: Claim) => { o[c.id] = true; });
+        setOpen(o);
       }
-    } catch {
-      setErrorDetails({
-        message: 'Network error connecting to research verification service.',
-        stage: 'initial-search',
-      });
-    } finally {
-      setIsAnalyzing(false);
-    }
+    } catch { setError({ message: 'Network error.', stage: 'connection' }); }
+    finally { setIsAnalyzing(false); }
   };
 
-  const handlePopulateExample = () => {
+  const loadExample = () => {
+    setSelectedMode('research');
     setQuery('Does coffee consumption decrease overall mortality and cardiovascular disease risk?');
-    setErrorDetails(null);
-    if (queryTextareaRef.current) {
-      queryTextareaRef.current.focus();
-    }
+    setError(null);
+    inputRef.current?.focus();
   };
 
-  const handleLoadDemoResult = () => {
+  const loadDemo = () => {
+    setSelectedMode('audit');
     setQuery(MOCK_RESEARCH_RUN.query);
-    setErrorDetails(null);
-    setActiveRun({
-      ...MOCK_RESEARCH_RUN,
-      createdAt: new Date().toISOString(),
-    });
-    setExpandedClaims({
-      'claim-1': true,
-      'claim-2': true,
-      'claim-3': true,
-      'claim-4': true,
-    });
+    setError(null);
+    setRun({ ...MOCK_RESEARCH_RUN, createdAt: new Date().toISOString() });
+    setOpen({ 'claim-1': true, 'claim-2': true, 'claim-3': true, 'claim-4': true });
   };
 
-  const handleFocusQueryInput = () => {
-    if (queryTextareaRef.current) {
-      queryTextareaRef.current.focus();
-      queryTextareaRef.current.scrollIntoView({ behavior: 'smooth' });
+  const toggle = (id: string) => setOpen((p) => ({ ...p, [id]: !p[id] }));
+  const toggleWhy = (id: string) => setWhyOpen((p) => ({ ...p, [id]: !p[id] }));
+
+  const copyNextQuery = (claimId: string, nextBestQuery: string) => {
+    void navigator.clipboard.writeText(nextBestQuery);
+    setCopied(claimId);
+    setTimeout(() => setCopied(null), 1600);
+  };
+
+  const exportReport = (format: 'md' | 'json') => {
+    if (!run) return;
+    const disclaimer = 'This report records retrieved evidence and automated verification. Confidence scores are heuristic and do not replace expert review.';
+    if (format === 'json') {
+      const blob = new Blob([JSON.stringify({ reportType: 'VerityGraph Proof-Carrying Report', disclaimer, ...run }, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'veritygraph-proof-report.json'; a.click();
+      URL.revokeObjectURL(url);
+      return;
     }
+    const claims = run.claims.map((claim, i) => [
+      `## Claim ${i + 1}: ${claim.text}`,
+      `- Verdict: ${claim.verdict}`,
+      `- Build status: ${claim.claimBuildStatus}`,
+      `- Confidence: ${pct(claim.confidence)}%`,
+      `- Source independence: ${claim.sourceIndependence.independentOrigins}/${claim.sourceIndependence.sourceCount} independent origins`,
+      `- Missing evidence: ${claim.missingEvidence}`,
+      `- Recommended next search: ${claim.nextBestQuery}`,
+      '',
+      ...claim.evidence.map((ev) => `- [${ev.stance}] ${ev.title} (${ev.url}) — ${ev.domain}; ${ev.evidenceBasis}; ${ev.originGroupId}\n  > ${ev.excerpt}`),
+    ].join('\n')).join('\n\n');
+    const md = [
+      '# VerityGraph Proof-Carrying Report',
+      '',
+      `- Query: ${run.query}`,
+      `- Workflow mode: ${run.workflowMode}`,
+      `- Created: ${run.createdAt}`,
+      `- Build status: ${run.buildResult.status} — ${run.buildResult.headline}`,
+      '',
+      run.summary,
+      '',
+      claims,
+      '',
+      `Disclaimer: ${disclaimer}`,
+      '',
+    ].join('\n');
+    const blob = new Blob([md], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'veritygraph-proof-report.md'; a.click();
+    URL.revokeObjectURL(url);
   };
 
-  const toggleExpand = (claimId: string) => {
-    setExpandedClaims((prev) => ({
-      ...prev,
-      [claimId]: !prev[claimId],
-    }));
+  /* ── Badge renderers ───────────────────────────────── */
+
+  const verdictCfg: Record<ClaimVerdict, { bg: string; fg: string; icon: React.ReactNode; label: string }> = {
+    supported:    { bg: 'var(--ok-dim)',   fg: 'var(--ok-text)',   icon: <CheckCircle2 className="w-3 h-3" />, label: 'Supported' },
+    contradicted: { bg: 'var(--bad-dim)',  fg: 'var(--bad-text)',  icon: <XCircle className="w-3 h-3" />,      label: 'Contradicted' },
+    partial:      { bg: 'var(--warn-dim)', fg: 'var(--warn-text)', icon: <AlertTriangle className="w-3 h-3" />, label: 'Partial' },
+    insufficient: { bg: 'var(--mute-dim)', fg: 'var(--mute-text)', icon: <HelpCircle className="w-3 h-3" />,   label: 'Insufficient' },
   };
 
-  const toggleWhyScore = (claimId: string) => {
-    setExpandedWhyScore((prev) => ({
-      ...prev,
-      [claimId]: !prev[claimId],
-    }));
-  };
-
-  const getVerdictBadge = (verdict: ClaimVerdict) => {
-    switch (verdict) {
-      case 'supported':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-            <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />
-            Supported
-          </span>
-        );
-      case 'contradicted':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200">
-            <XCircle className="w-3.5 h-3.5" aria-hidden="true" />
-            Contradicted
-          </span>
-        );
-      case 'partial':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200">
-            <AlertTriangle className="w-3.5 h-3.5" aria-hidden="true" />
-            Partial Support
-          </span>
-        );
-      case 'insufficient':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-300">
-            <HelpCircle className="w-3.5 h-3.5" aria-hidden="true" />
-            Insufficient Evidence
-          </span>
-        );
-    }
-  };
-
-  const getEvidenceStanceBadge = (stance: EvidenceStance) => {
-    switch (stance) {
-      case 'support':
-        return (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-            <CheckCircle2 className="w-3 h-3" aria-hidden="true" />
-            Supports claim
-          </span>
-        );
-      case 'contradict':
-        return (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200">
-            <XCircle className="w-3 h-3" aria-hidden="true" />
-            Challenges claim
-          </span>
-        );
-      case 'neutral':
-        return (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-200">
-            <Info className="w-3 h-3 text-slate-500" aria-hidden="true" />
-            Context only
-          </span>
-        );
-    }
-  };
-
-  const getEvidenceBasisBadge = (basis: EvidenceBasis) => {
-    if (basis === 'focused-source-extract') {
-      return (
-        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200">
-          <FileText className="w-3 h-3 text-blue-500" aria-hidden="true" />
-          Focused source extract
-        </span>
-      );
-    }
+  const Badge = ({ v }: { v: ClaimVerdict }) => {
+    const c = verdictCfg[v];
     return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-200">
-        <FileCode className="w-3 h-3 text-slate-500" aria-hidden="true" />
-        Search snippet
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold"
+            style={{ background: c.bg, color: c.fg }}>
+        {c.icon} {c.label}
       </span>
     );
   };
 
-  const totalClaims = activeRun?.claims.length || 0;
-  const supportedCount =
-    activeRun?.claims.filter((c) => c.verdict === 'supported').length || 0;
-  const contradictedCount =
-    activeRun?.claims.filter((c) => c.verdict === 'contradicted').length || 0;
-  const partialCount =
-    activeRun?.claims.filter((c) => c.verdict === 'partial').length || 0;
-  const insufficientCount =
-    activeRun?.claims.filter((c) => c.verdict === 'insufficient').length || 0;
-  const avgConfidence = totalClaims
-    ? Math.round(
-        activeRun!.claims.reduce(
-          (acc, c) => acc + (c.confidence > 1 ? c.confidence : c.confidence * 100),
-          0
-        ) / totalClaims
-      )
+  const StanceBadge = ({ s }: { s: EvidenceStance }) => {
+    const map: Record<EvidenceStance, { bg: string; fg: string; icon: React.ReactNode; label: string }> = {
+      support:    { bg: 'var(--ok-dim)',   fg: 'var(--ok-text)',   icon: <CheckCircle2 className="w-3 h-3" />, label: 'Supports' },
+      contradict: { bg: 'var(--bad-dim)',  fg: 'var(--bad-text)',  icon: <XCircle className="w-3 h-3" />,      label: 'Challenges' },
+      neutral:    { bg: 'var(--mute-dim)', fg: 'var(--mute-text)', icon: <Minus className="w-3 h-3" />,        label: 'Context' },
+    };
+    const c = map[s];
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold"
+            style={{ background: c.bg, color: c.fg }}>
+        {c.icon} {c.label}
+      </span>
+    );
+  };
+
+  const BasisBadge = ({ b }: { b: EvidenceBasis }) => {
+    const extracted = b === 'focused-source-extract';
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium"
+            style={{
+              background: extracted ? 'var(--info-dim)' : 'var(--bg-overlay)',
+              color: extracted ? 'var(--info-text)' : 'var(--ink-3)',
+            }}>
+        {extracted ? <FileText className="w-3 h-3" /> : <FileCode className="w-3 h-3" />}
+        {extracted ? 'Extracted' : 'Snippet'}
+      </span>
+    );
+  };
+
+  const buildBadge = (s: VerificationBuildStatus) => {
+    const map: Record<VerificationBuildStatus, { bg: string; fg: string; icon: React.ReactNode; label: string }> = {
+      pass: { bg: 'var(--ok-dim)', fg: 'var(--ok-text)', icon: <Check className="w-3 h-3" />, label: 'PASS' },
+      warning: { bg: 'var(--warn-dim)', fg: 'var(--warn-text)', icon: <AlertTriangle className="w-3 h-3" />, label: 'WARNING' },
+      fail: { bg: 'var(--bad-dim)', fg: 'var(--bad-text)', icon: <XCircle className="w-3 h-3" />, label: 'FAIL' },
+    };
+    const c = map[s];
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold"
+            style={{ background: c.bg, color: c.fg }}>
+        {c.icon} {c.label}
+      </span>
+    );
+  };
+
+  /* ── Computed ───────────────────────────────────────── */
+
+  const total = run?.claims.length || 0;
+  const counts = {
+    ok:   run?.claims.filter((c) => c.verdict === 'supported').length || 0,
+    bad:  run?.claims.filter((c) => c.verdict === 'contradicted').length || 0,
+    warn: run?.claims.filter((c) => c.verdict === 'partial').length || 0,
+    mute: run?.claims.filter((c) => c.verdict === 'insufficient').length || 0,
+  };
+  const avgConf = total
+    ? Math.round(run!.claims.reduce((a, c) => a + pct(c.confidence), 0) / total)
     : 0;
 
+  /* ── Render ─────────────────────────────────────────── */
+
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans">
-      {/* Navigation Header */}
-      <header className="border-b border-slate-200 bg-white sticky top-0 z-10">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-slate-900 text-white rounded-lg">
-              <ShieldCheck className="w-5 h-5" aria-hidden="true" />
-            </div>
-            <div>
-              <h1 className="font-bold text-lg leading-tight tracking-tight text-slate-900">
-                VerityGraph
-              </h1>
-              <p className="text-xs text-slate-500 font-medium">
-                Every claim must earn its evidence.
-              </p>
-            </div>
+    <div className="min-h-screen flex flex-col" style={{ background: 'var(--bg)' }}>
+      {/* ── Header ──────────────────────────────────── */}
+      <header className="sticky top-0 z-20 backdrop-blur-md"
+              style={{ background: 'oklch(0.14 0.008 260 / 0.85)', borderBottom: '1px solid var(--border-subtle)' }}>
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 h-12 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="w-4 h-4" style={{ color: 'var(--accent)' }} aria-hidden="true" />
+            <span className="text-sm font-bold tracking-tight" style={{ color: 'var(--ink)' }}>
+              VerityGraph
+            </span>
           </div>
           <div className="flex items-center gap-2">
-            {activeRun && (
+            {run && (
               <>
-                {activeRun.mode === 'live' ? (
-                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800 border border-emerald-300">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse" aria-hidden="true" />
-                    Live Research
+                {run.mode === 'live' ? (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-semibold"
+                        style={{ background: 'var(--ok-dim)', color: 'var(--ok-text)' }}>
+                    <span className="w-1.5 h-1.5 rounded-full anim-pulse" style={{ background: 'var(--ok)' }} />
+                    Live
                   </span>
                 ) : (
-                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-50 text-blue-800 border border-blue-200">
-                    <Database className="w-3 h-3 text-blue-600" aria-hidden="true" />
-                    Demo Data
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-semibold"
+                        style={{ background: 'var(--bg-overlay)', color: 'var(--ink-3)' }}>
+                    <Database className="w-3 h-3" /> Demo
                   </span>
                 )}
-
-                {activeRun.providerMetadata?.fallbackUsed && (
-                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-300">
-                    <KeyRound className="w-3 h-3 text-amber-600" aria-hidden="true" />
-                    Secondary Gemini key used
+                {run.providerMetadata?.fallbackUsed && (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-semibold"
+                        style={{ background: 'var(--warn-dim)', color: 'var(--warn-text)' }}>
+                    <KeyRound className="w-3 h-3" /> Fallback
                   </span>
                 )}
               </>
@@ -308,419 +299,407 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Main Content Container */}
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 py-8 flex-1 w-full space-y-8">
-        {/* Research Input Form */}
-        <section className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-4">
-          <div className="space-y-1">
-            <label
-              htmlFor="research-query"
-              className="block text-sm font-semibold text-slate-900"
-            >
-              Research Query
-            </label>
-            <p className="text-xs text-slate-500">
-              Enter a hypothesis, scientific topic, or claim set to extract and verify atomic evidence.
-            </p>
-          </div>
+      {/* ── Main ────────────────────────────────────── */}
+      <main className="max-w-6xl mx-auto px-4 sm:px-6 py-6 flex-1 w-full">
 
-          <form onSubmit={handleVerify} className="space-y-3">
-            <div className="relative">
+        {/* ── Query Bar ──────────────────────────────── */}
+        <section className="anim-in mb-6">
+          <div className="flex gap-2 mb-3" role="tablist" aria-label="Workflow mode">
+            <button type="button" onClick={() => setSelectedMode('research')} aria-pressed={selectedMode === 'research'}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-bold rounded-md tr"
+              style={{ background: selectedMode === 'research' ? 'var(--accent-dim)' : 'var(--bg-raised)', color: selectedMode === 'research' ? 'var(--accent-text)' : 'var(--ink-2)', border: '1px solid var(--border-subtle)' }}>
+              <Search className="w-3 h-3" /> Research Mode
+            </button>
+            <button type="button" onClick={() => setSelectedMode('audit')} aria-pressed={selectedMode === 'audit'}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-bold rounded-md tr"
+              style={{ background: selectedMode === 'audit' ? 'var(--accent-dim)' : 'var(--bg-raised)', color: selectedMode === 'audit' ? 'var(--accent-text)' : 'var(--ink-2)', border: '1px solid var(--border-subtle)' }}>
+              <Cpu className="w-3 h-3" /> Audit Mode
+            </button>
+          </div>
+          <form onSubmit={handleVerify} className="flex flex-col sm:flex-row gap-3">
+            <div className="flex-1 relative">
+              <label htmlFor="research-query" className="sr-only">
+                {selectedMode === 'audit' ? 'Paste AI-generated answer' : 'Enter research query'}
+              </label>
               <textarea
-                ref={queryTextareaRef}
+                ref={inputRef}
                 id="research-query"
-                rows={3}
+                rows={selectedMode === 'audit' ? 5 : 3}
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 disabled={isAnalyzing}
-                placeholder="e.g. Does daily creatine monohydrate supplementation improve cognitive performance in elderly adults?"
-                className="w-full rounded-lg border border-slate-300 p-3.5 text-sm text-slate-900 placeholder-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:border-transparent resize-none font-medium disabled:opacity-60"
+                placeholder={selectedMode === 'audit' ? 'Paste an AI-generated answer or report to audit...' : 'Enter a research hypothesis or claim to verify...'}
+                className="w-full h-28 sm:h-20 rounded-lg px-4 py-3 text-sm resize-none overflow-y-auto tr disabled:opacity-40"
+                style={{
+                  background: 'var(--bg-raised)',
+                  color: 'var(--ink)',
+                  border: '1px solid var(--border)',
+                }}
               />
             </div>
-
-            <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handlePopulateExample}
-                  disabled={isAnalyzing}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-md transition-colors disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:outline-none"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
-                  Try Example Query
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleLoadDemoResult}
-                  disabled={isAnalyzing}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-md transition-colors disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:outline-none"
-                >
-                  <Database className="w-3.5 h-3.5" aria-hidden="true" />
-                  Load Demo Result
-                </button>
-              </div>
-
-              <button
-                type="submit"
-                disabled={isAnalyzing || !query.trim()}
-                className="inline-flex items-center gap-2 px-5 py-2 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg shadow-sm disabled:opacity-50 transition-colors focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:outline-none"
-              >
+            <div className="flex sm:flex-col gap-2 shrink-0">
+              <button type="submit" disabled={isAnalyzing || !query.trim()}
+                className="inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-semibold rounded-lg disabled:opacity-30 tr"
+                style={{ background: 'var(--accent)', color: '#fff' }}
+                onMouseEnter={(e) => { if (!e.currentTarget.disabled) e.currentTarget.style.background = 'var(--accent-hover)'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--accent)'; }}>
                 {isAnalyzing ? (
                   <span className="inline-flex items-center gap-2" aria-live="polite">
-                    <RefreshCw className="w-4 h-4 animate-spin" aria-hidden="true" />
-                    <span>{STAGES[stageIndex]}...</span>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span className="text-xs">{STAGES[stageIndex]}</span>
                   </span>
                 ) : (
-                  <>
-                    <Search className="w-4 h-4" aria-hidden="true" />
-                    Verify Research
-                  </>
+                  <>{selectedMode === 'audit' ? <Cpu className="w-3.5 h-3.5" /> : <Search className="w-3.5 h-3.5" />} {selectedMode === 'audit' ? 'Audit' : 'Verify'}</>
                 )}
               </button>
+              <div className="flex gap-1.5">
+                <button type="button" onClick={loadExample} disabled={isAnalyzing}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium rounded-md disabled:opacity-30 tr"
+                  style={{ background: 'var(--bg-overlay)', color: 'var(--ink-2)', border: '1px solid var(--border-subtle)' }}>
+                  <RefreshCw className="w-3 h-3" /> Example
+                </button>
+                <button type="button" onClick={loadDemo} disabled={isAnalyzing}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium rounded-md disabled:opacity-30 tr"
+                  style={{ background: 'var(--bg-overlay)', color: 'var(--ink-2)', border: '1px solid var(--border-subtle)' }}>
+                  <Database className="w-3 h-3" /> Demo
+                </button>
+              </div>
             </div>
           </form>
         </section>
 
-        {/* Error Banner */}
-        {errorDetails && (
-          <div
-            role="alert"
-            className="bg-rose-50 border border-rose-200 rounded-xl p-4 flex items-start gap-3 text-rose-800 text-sm"
-          >
-            <AlertCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" aria-hidden="true" />
-            <div className="space-y-1">
-              <div className="flex items-center gap-2">
-                <span className="font-bold uppercase tracking-wider text-xs bg-rose-200 text-rose-900 px-2 py-0.5 rounded font-mono">
-                  Stage: {errorDetails.stage || 'pipeline'}
-                </span>
-                <span className="font-semibold text-slate-900">Pipeline Error</span>
-              </div>
-              <p className="text-xs text-rose-700">{errorDetails.message}</p>
+        {/* ── Error ──────────────────────────────────── */}
+        {error && (
+          <div role="alert" className="mb-6 rounded-lg p-3 flex items-start gap-2.5 text-sm anim-in"
+               style={{ background: 'var(--bad-dim)', border: '1px solid oklch(0.30 0.06 20)', color: 'var(--bad-text)' }}>
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            <div>
+              <span className="text-[10px] font-bold uppercase tracking-wider font-mono px-1 py-0.5 rounded mr-2"
+                    style={{ background: 'oklch(0.30 0.06 20)' }}>
+                {error.stage}
+              </span>
+              <span className="text-xs">{error.message}</span>
             </div>
           </div>
         )}
 
-        {/* Empty State when activeRun === null */}
-        {!activeRun && !isAnalyzing && (
-          <section className="bg-white border border-slate-200 rounded-xl p-8 text-center space-y-6 shadow-sm">
-            <div className="mx-auto w-12 h-12 bg-slate-100 rounded-full flex items-center justify-center text-slate-700">
-              <Sparkles className="w-6 h-6" aria-hidden="true" />
+        {/* ── Empty State ────────────────────────────── */}
+        {!run && !isAnalyzing && (
+          <section className="anim-in mt-8 flex flex-col items-center text-center">
+            <div className="w-12 h-12 rounded-xl flex items-center justify-center mb-5"
+                 style={{ background: 'var(--accent-dim)', color: 'var(--accent)' }}>
+              <ShieldCheck className="w-5 h-5" />
+            </div>
+            <h2 className="text-xl font-bold tracking-tight mb-2" style={{ color: 'var(--ink)', letterSpacing: '-0.02em' }}>
+              Verification Compiler for AI-Generated Knowledge
+            </h2>
+            <p className="text-sm max-w-md mb-8" style={{ color: 'var(--ink-2)' }}>
+              VerityGraph audits research and AI-generated answers like a verification compiler. Unsupported claims fail the build.
+            </p>
+
+            {/* Pipeline steps — compact horizontal */}
+            <div className="grid grid-cols-3 sm:grid-cols-6 gap-3 w-full max-w-2xl stagger">
+              {[
+                'Search', 'Extract', 'Challenge', 'Read', 'Verify', 'Synthesize',
+              ].map((step, i) => (
+                <div key={i} className="rounded-lg px-3 py-2.5 text-center anim-in"
+                     style={{ background: 'var(--bg-raised)', border: '1px solid var(--border-subtle)' }}>
+                  <span className="text-[10px] font-mono font-bold block mb-0.5" style={{ color: 'var(--ink-3)' }}>
+                    {String(i + 1).padStart(2, '0')}
+                  </span>
+                  <span className="text-xs font-semibold" style={{ color: 'var(--ink-2)' }}>{step}</span>
+                </div>
+              ))}
             </div>
 
-            <div className="max-w-md mx-auto space-y-2">
-              <h2 className="text-lg font-bold text-slate-900">
-                Evidence-First Multi-Agent Research System
-              </h2>
-              <p className="text-xs text-slate-600 leading-relaxed">
-                VerityGraph extracts atomic claims, searches scientific literature via Tavily, extracts focused source passages, and evaluates supporting and challenging evidence using Google Gemini.
-              </p>
-            </div>
-
-            <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
-              <button
-                type="button"
-                onClick={handleFocusQueryInput}
-                className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg shadow-sm transition-colors focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:outline-none"
-              >
-                Run Live Verification
-                <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
+            <div className="flex flex-wrap justify-center gap-3 mt-8">
+              <button type="button" onClick={() => { setSelectedMode('research'); inputRef.current?.focus(); }}
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg tr"
+                style={{ background: 'var(--accent)', color: '#fff' }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--accent-hover)'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--accent)' }}>
+                Verify Research <ArrowRight className="w-3.5 h-3.5" />
               </button>
-              <button
-                type="button"
-                onClick={handleLoadDemoResult}
-                className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:outline-none"
-              >
-                <Database className="w-3.5 h-3.5 text-slate-500" aria-hidden="true" />
-                Load Demo Result
+              <button type="button" onClick={() => { setSelectedMode('audit'); inputRef.current?.focus(); }}
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg tr"
+                style={{ background: 'var(--bg-raised)', color: 'var(--ink-2)', border: '1px solid var(--border)' }}>
+                <Cpu className="w-3.5 h-3.5" /> Audit
+              </button>
+              <button type="button" onClick={loadDemo}
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg tr"
+                style={{ background: 'var(--bg-raised)', color: 'var(--ink-2)', border: '1px solid var(--border)' }}>
+                <Database className="w-3.5 h-3.5" /> Demo
               </button>
             </div>
           </section>
         )}
 
-        {/* Results Area */}
-        {activeRun && (
-          <div className="space-y-8">
-            {/* Executive Summary & Stats Grid */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              {/* Executive Summary */}
-              <div className="lg:col-span-2 bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-3">
-                <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
-                  <FileText className="w-4 h-4 text-slate-700" aria-hidden="true" />
-                  <h2 className="text-sm font-bold tracking-tight text-slate-900 uppercase">
-                    Executive Summary
-                  </h2>
+        {/* ── Results ────────────────────────────────── */}
+        {run && (
+          <div className="space-y-5 anim-in">
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg p-3"
+                 style={{ background: 'var(--bg-raised)', border: '1px solid var(--border-subtle)' }}>
+              <span className="text-[11px] font-bold uppercase tracking-wider" style={{ color: 'var(--ink-3)' }}>
+                {run.workflowMode === 'audit' ? 'AI Answer Audit' : 'Research Verification'}
+              </span>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => exportReport('md')}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold rounded-md tr"
+                  style={{ background: 'var(--bg-overlay)', color: 'var(--ink-2)', border: '1px solid var(--border-subtle)' }}>
+                  <Download className="w-3 h-3" /> Export Markdown
+                </button>
+                <button type="button" onClick={() => exportReport('json')}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold rounded-md tr"
+                  style={{ background: 'var(--bg-overlay)', color: 'var(--ink-2)', border: '1px solid var(--border-subtle)' }}>
+                  <FileCode className="w-3 h-3" /> Export JSON
+                </button>
+              </div>
+            </div>
+
+            <section className="rounded-lg p-5"
+                     style={{ background: run.buildResult.status === 'pass' ? 'var(--ok-dim)' : run.buildResult.status === 'warning' ? 'var(--warn-dim)' : 'var(--bad-dim)', border: '1px solid var(--border-subtle)' }}>
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
+                <div className="flex items-center gap-2">
+                  {buildBadge(run.buildResult.status)}
+                  <h2 className="text-lg font-bold" style={{ color: 'var(--ink)' }}>{run.buildResult.headline}</h2>
                 </div>
-                <p className="text-sm leading-relaxed text-slate-700">
-                  {activeRun.summary}
+                <span className="text-[11px] font-mono" style={{ color: 'var(--ink-2)' }}>
+                  {run.buildResult.passedClaims} pass · {run.buildResult.warningClaims} warning · {run.buildResult.failedClaims} fail
+                </span>
+              </div>
+              <p className="text-sm" style={{ color: 'var(--ink-2)' }}>{run.buildResult.explanation}</p>
+            </section>
+            {/* Summary + metrics bar */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+              {/* Summary */}
+              <div className="lg:col-span-8 rounded-lg p-5"
+                   style={{ background: 'var(--bg-raised)', border: '1px solid var(--border-subtle)' }}>
+                <h2 className="text-[10px] font-bold uppercase tracking-widest mb-3"
+                    style={{ color: 'var(--ink-3)', letterSpacing: '0.1em' }}>
+                  Summary
+                </h2>
+                <p className="text-sm leading-relaxed" style={{ color: 'var(--ink)', maxWidth: '70ch' }}>
+                  {run.summary}
                 </p>
               </div>
 
-              {/* Verification Stats & Run Metrics */}
-              <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-3">
-                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                  <div className="flex items-center gap-2">
-                    <BarChart2 className="w-4 h-4 text-slate-700" aria-hidden="true" />
-                    <h2 className="text-sm font-bold tracking-tight text-slate-900 uppercase">
-                      Verification Metrics
-                    </h2>
-                  </div>
-                  {activeRun.metrics && (
-                    <span className="inline-flex items-center gap-1 text-xs text-slate-500 font-mono">
-                      <Clock className="w-3 h-3 text-slate-400" aria-hidden="true" />
-                      {(activeRun.metrics.durationMs / 1000).toFixed(1)}s
+              {/* Metrics — dense */}
+              <div className="lg:col-span-4 rounded-lg p-5"
+                   style={{ background: 'var(--bg-raised)', border: '1px solid var(--border-subtle)' }}>
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="text-[10px] font-bold uppercase tracking-widest"
+                      style={{ color: 'var(--ink-3)', letterSpacing: '0.1em' }}>
+                    Metrics
+                  </h2>
+                  {run.metrics && (
+                    <span className="text-[10px] font-mono flex items-center gap-1" style={{ color: 'var(--ink-3)' }}>
+                      <Clock className="w-3 h-3" />
+                      {(run.metrics.durationMs / 1000).toFixed(1)}s
                     </span>
                   )}
                 </div>
 
-                <div className="grid grid-cols-2 gap-3 pt-1">
-                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg">
-                    <span className="block text-xs font-medium text-slate-500">
-                      Total Claims
-                    </span>
-                    <span className="text-lg font-bold text-slate-900">
-                      {totalClaims}
-                    </span>
+                {/* Big numbers */}
+                <div className="flex gap-6 mb-3">
+                  <div>
+                    <span className="text-2xl font-bold" style={{ color: 'var(--ink)' }}>{total}</span>
+                    <span className="block text-[10px]" style={{ color: 'var(--ink-3)' }}>Claims</span>
                   </div>
-                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg">
-                    <span className="block text-xs font-medium text-slate-500">
-                      Avg Confidence
-                    </span>
-                    <span className="text-lg font-bold text-slate-900">
-                      {avgConfidence}%
-                    </span>
+                  <div>
+                    <span className="text-2xl font-bold" style={{ color: 'var(--ink)' }}>{avgConf}%</span>
+                    <span className="block text-[10px]" style={{ color: 'var(--ink-3)' }}>Confidence</span>
                   </div>
-                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg">
-                    <span className="block text-xs font-medium text-slate-500 inline-flex items-center gap-1">
-                      <Layers className="w-3 h-3 text-slate-400" aria-hidden="true" />
-                      Sources Scanned
-                    </span>
-                    <span className="text-lg font-bold text-slate-900">
-                      {activeRun.metrics?.sourcesScanned ?? 0}
-                    </span>
-                  </div>
-                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg">
-                    <span className="block text-xs font-medium text-slate-500 inline-flex items-center gap-1">
-                      <Globe className="w-3 h-3 text-slate-400" aria-hidden="true" />
-                      Distinct Domains
-                    </span>
-                    <span className="text-lg font-bold text-slate-900">
-                      {activeRun.metrics?.distinctDomains ?? 0}
-                    </span>
-                  </div>
-                  <div className="p-3 bg-blue-50/50 border border-blue-200 rounded-lg">
-                    <span className="block text-xs font-medium text-blue-800 inline-flex items-center gap-1">
-                      <FileText className="w-3 h-3 text-blue-600" aria-hidden="true" />
-                      Full Extracted
-                    </span>
-                    <span className="text-lg font-bold text-blue-900">
-                      {activeRun.metrics?.extractedSources ?? 0}
-                    </span>
-                  </div>
-                  <div className="p-3 bg-slate-100/70 border border-slate-300 rounded-lg">
-                    <span className="block text-xs font-medium text-slate-700 inline-flex items-center gap-1">
-                      <FileCode className="w-3 h-3 text-slate-500" aria-hidden="true" />
-                      Snippet Fallbacks
-                    </span>
-                    <span className="text-lg font-bold text-slate-900">
-                      {activeRun.metrics?.snippetFallbackSources ?? 0}
-                    </span>
-                  </div>
-                  <div className="p-3 bg-emerald-50/50 border border-emerald-200 rounded-lg">
-                    <span className="block text-xs font-medium text-emerald-800">
-                      Supported
-                    </span>
-                    <span className="text-lg font-bold text-emerald-900">
-                      {supportedCount}
-                    </span>
-                  </div>
-                  <div className="p-3 bg-rose-50/50 border border-rose-200 rounded-lg">
-                    <span className="block text-xs font-medium text-rose-800">
-                      Challenged / Insufficient
-                    </span>
-                    <span className="text-lg font-bold text-rose-900">
-                      {contradictedCount + partialCount + insufficientCount}
-                    </span>
-                  </div>
+                </div>
+
+                {/* Confidence bar */}
+                <div className="w-full h-1 rounded-full mb-4" style={{ background: 'var(--border)' }}>
+                  <div className="h-full rounded-full anim-bar"
+                       style={{ width: `${avgConf}%`, background: confColor(avgConf) }} />
+                </div>
+
+                {/* Stats row */}
+                <div className="grid grid-cols-2 gap-y-1.5 gap-x-4 text-[11px]" style={{ color: 'var(--ink-2)' }}>
+                  <span className="flex items-center gap-1.5">
+                    <Layers className="w-3 h-3" style={{ color: 'var(--ink-3)' }} />
+                    <strong className="font-semibold">{run.metrics?.sourcesScanned ?? 0}</strong> sources
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <Globe className="w-3 h-3" style={{ color: 'var(--ink-3)' }} />
+                    <strong className="font-semibold">{run.metrics?.distinctDomains ?? 0}</strong> domains
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <FileText className="w-3 h-3" style={{ color: 'var(--ink-3)' }} />
+                    <strong className="font-semibold">{run.metrics?.extractedSources ?? 0}</strong> extracted
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <FileCode className="w-3 h-3" style={{ color: 'var(--ink-3)' }} />
+                    <strong className="font-semibold">{run.metrics?.snippetFallbackSources ?? 0}</strong> snippets
+                  </span>
+                </div>
+
+                {/* Verdict chips */}
+                <div className="flex items-center gap-2 mt-3 pt-3" style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                  {counts.ok > 0 && <span className="flex items-center gap-1 text-[10px] font-semibold" style={{ color: 'var(--ok-text)' }}><CheckCircle2 className="w-3 h-3" />{counts.ok}</span>}
+                  {counts.bad > 0 && <span className="flex items-center gap-1 text-[10px] font-semibold" style={{ color: 'var(--bad-text)' }}><XCircle className="w-3 h-3" />{counts.bad}</span>}
+                  {counts.warn > 0 && <span className="flex items-center gap-1 text-[10px] font-semibold" style={{ color: 'var(--warn-text)' }}><AlertTriangle className="w-3 h-3" />{counts.warn}</span>}
+                  {counts.mute > 0 && <span className="flex items-center gap-1 text-[10px] font-semibold" style={{ color: 'var(--mute-text)' }}><HelpCircle className="w-3 h-3" />{counts.mute}</span>}
                 </div>
               </div>
             </div>
 
-            {/* Extracted & Verified Claims List */}
-            <section className="space-y-4">
-              <div className="flex items-center justify-between">
-                <h2 className="text-base font-bold text-slate-900">
-                  Extracted & Verified Claims ({totalClaims})
+            {/* ── Claims ──────────────────────────────── */}
+            <section>
+              <div className="flex items-baseline gap-2 mb-4">
+                <h2 className="text-sm font-bold" style={{ color: 'var(--ink)' }}>
+                  Verified Claims
                 </h2>
-                <span className="text-xs text-slate-500">
-                  Claim-level evidence verification graph
-                </span>
+                <span className="text-xs font-mono" style={{ color: 'var(--ink-3)' }}>{total}</span>
               </div>
 
-              <div className="space-y-4">
-                {activeRun.claims.map((claim: Claim) => {
-                  const isExpanded = !!expandedClaims[claim.id];
-                  const isWhyExpanded = !!expandedWhyScore[claim.id];
-                  const confidenceDisplay = Math.round(
-                    claim.confidence > 1 ? claim.confidence : claim.confidence * 100
-                  );
+              <div className="space-y-2 stagger">
+                {run.claims.map((claim: Claim) => {
+                  const isOpen = !!open[claim.id];
+                  const isWhy = !!whyOpen[claim.id];
+                  const conf = pct(claim.confidence);
                   return (
-                    <article
-                      key={claim.id}
-                      className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden transition-all"
-                    >
-                      {/* Card Header / Summary Line */}
-                      <div className="p-5 space-y-3">
-                        <div className="flex flex-wrap items-start justify-between gap-3">
+                    <article key={claim.id} className="rounded-lg overflow-hidden anim-in"
+                             style={{ background: 'var(--bg-raised)', border: '1px solid var(--border-subtle)' }}>
+                      <div className="p-4">
+                        {/* Row 1: verdict + confidence + claim text */}
+                        <div className="flex flex-wrap items-start gap-2 mb-2">
+                          <Badge v={claim.verdict} />
+                          {buildBadge(claim.claimBuildStatus)}
+                          <span className="inline-flex items-center gap-1 text-[11px] font-mono font-medium" style={{ color: 'var(--ink-2)' }}>
+                            {conf}%
+                          </span>
+                          <span className="text-[11px] font-mono" style={{ color: 'var(--ink-3)' }}>
+                            {claim.sourceIndependence.independentOrigins}/{claim.sourceIndependence.sourceCount} independent origins
+                          </span>
+                        </div>
+
+                        <h3 className="text-sm font-semibold leading-snug break-words mb-2" style={{ color: 'var(--ink)' }}>
+                          &ldquo;{claim.text}&rdquo;
+                        </h3>
+
+                        <p className="text-xs leading-relaxed mb-3" style={{ color: 'var(--ink-2)', maxWidth: '65ch' }}>
+                          {claim.explanation}
+                        </p>
+
+                        <div className="rounded-md p-3 mb-3 text-[11px] space-y-2"
+                             style={{ background: 'var(--bg-inset)', border: '1px solid var(--border-subtle)' }}>
+                          <p style={{ color: 'var(--ink-2)' }}>
+                            <strong style={{ color: 'var(--ink)' }}>What would change this verdict?</strong> {claim.missingEvidence}
+                          </p>
                           <div className="flex flex-wrap items-center gap-2">
-                            {getVerdictBadge(claim.verdict)}
-                            <span className="text-xs font-medium text-slate-500">
-                              Confidence: {confidenceDisplay}%
-                            </span>
-                            <button
-                              type="button"
-                              aria-expanded={isWhyExpanded}
-                              onClick={() => toggleWhyScore(claim.id)}
-                              className="inline-flex items-center gap-1 text-xs font-semibold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 px-2 py-0.5 rounded transition-colors focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:outline-none"
-                            >
-                              <Info className="w-3 h-3 text-slate-500" aria-hidden="true" />
-                              Why this score?
-                              {isWhyExpanded ? (
-                                <ChevronUp className="w-3 h-3" aria-hidden="true" />
-                              ) : (
-                                <ChevronDown className="w-3 h-3" aria-hidden="true" />
-                              )}
+                            <span className="font-mono break-all" style={{ color: 'var(--ink-3)' }}>{claim.nextBestQuery}</span>
+                            <button type="button" onClick={() => copyNextQuery(claim.id, claim.nextBestQuery)}
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded tr"
+                              style={{ background: 'var(--bg-overlay)', color: 'var(--ink-2)', border: '1px solid var(--border-subtle)' }}>
+                              <Copy className="w-3 h-3" /> {copied === claim.id ? 'Copied' : 'Copy query'}
                             </button>
                           </div>
-                          <button
-                            type="button"
-                            aria-expanded={isExpanded}
-                            onClick={() => toggleExpand(claim.id)}
-                            className="inline-flex items-center gap-1 text-xs font-semibold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 px-2.5 py-1 rounded transition-colors focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:outline-none"
-                          >
-                            {isExpanded ? (
-                              <>
-                                Hide Evidence Details
-                                <ChevronUp className="w-3.5 h-3.5" aria-hidden="true" />
-                              </>
+                        </div>
+
+                        {/* Actions */}
+                        <div className="flex items-center gap-3">
+                          <button type="button" onClick={() => toggle(claim.id)} aria-expanded={isOpen}
+                            className="inline-flex items-center gap-1 text-[11px] font-semibold tr rounded px-1.5 py-0.5"
+                            style={{ color: 'var(--accent-text)' }}>
+                            {isOpen ? (
+                              <><ChevronUp className="w-3 h-3" /> Hide evidence</>
                             ) : (
-                              <>
-                                View {claim.evidence.length} Evidence Source
-                                {claim.evidence.length > 1 ? 's' : ''}
-                                <ChevronDown className="w-3.5 h-3.5" aria-hidden="true" />
-                              </>
+                              <><ChevronDown className="w-3 h-3" /> {claim.evidence.length} source{claim.evidence.length !== 1 ? 's' : ''}</>
                             )}
+                          </button>
+                          <button type="button" onClick={() => toggleWhy(claim.id)} aria-expanded={isWhy}
+                            className="inline-flex items-center gap-1 text-[10px] font-medium tr rounded px-1.5 py-0.5"
+                            style={{ color: 'var(--ink-3)' }}>
+                            <Info className="w-3 h-3" /> Why?
                           </button>
                         </div>
 
-                        {/* Expandable "Why this score?" Confidence Explanation */}
-                        {isWhyExpanded && claim.confidenceFactors && (
-                          <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs space-y-2">
-                            <h3 className="font-bold text-slate-800 uppercase tracking-wider text-[11px]">
-                              Deterministic Confidence Factors
-                            </h3>
-                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                              <div className="bg-white p-2 border border-slate-200 rounded">
-                                <span className="text-slate-500 block">Verified Evidence</span>
-                                <span className="font-bold text-slate-900">
-                                  {claim.confidenceFactors.evidenceCount} sources
-                                </span>
-                              </div>
-                              <div className="bg-white p-2 border border-slate-200 rounded">
-                                <span className="text-slate-500 block">Distinct Domains</span>
-                                <span className="font-bold text-slate-900">
-                                  {claim.confidenceFactors.distinctDomains} domains
-                                </span>
-                              </div>
-                              <div className="bg-white p-2 border border-slate-200 rounded">
-                                <span className="text-slate-500 block">Contradictions</span>
-                                <span
-                                  className={`font-bold ${
-                                    claim.confidenceFactors.hasContradiction
-                                      ? 'text-rose-700'
-                                      : 'text-emerald-700'
-                                  }`}
-                                >
-                                  {claim.confidenceFactors.hasContradiction ? 'Detected' : 'None'}
-                                </span>
-                              </div>
-                              <div className="bg-white p-2 border border-slate-200 rounded">
-                                <span className="text-slate-500 block">Confidence Cap</span>
-                                <span className="font-bold text-slate-900 truncate block">
-                                  {claim.confidenceFactors.appliedCap || 'No cap applied'}
-                                </span>
-                              </div>
+                        {/* Why score */}
+                        {isWhy && claim.confidenceFactors && (
+                          <div className="mt-3 rounded-md p-3 text-[11px] grid grid-cols-2 sm:grid-cols-4 gap-3 anim-in"
+                               style={{ background: 'var(--bg-inset)', border: '1px solid var(--border-subtle)' }}>
+                            <div>
+                              <span style={{ color: 'var(--ink-3)' }}>Evidence</span>
+                              <span className="block font-bold" style={{ color: 'var(--ink)' }}>{claim.confidenceFactors.evidenceCount}</span>
+                            </div>
+                            <div>
+                              <span style={{ color: 'var(--ink-3)' }}>Domains</span>
+                              <span className="block font-bold" style={{ color: 'var(--ink)' }}>{claim.confidenceFactors.distinctDomains}</span>
+                            </div>
+                            <div>
+                              <span style={{ color: 'var(--ink-3)' }}>Contradictions</span>
+                              <span className="block font-bold"
+                                    style={{ color: claim.confidenceFactors.hasContradiction ? 'var(--bad-text)' : 'var(--ok-text)' }}>
+                                {claim.confidenceFactors.hasContradiction ? 'Found' : 'None'}
+                              </span>
+                            </div>
+                            <div>
+                              <span style={{ color: 'var(--ink-3)' }}>Cap</span>
+                              <span className="block font-bold truncate" style={{ color: 'var(--ink)' }}>
+                                {claim.confidenceFactors.appliedCap || 'None'}
+                              </span>
                             </div>
                           </div>
                         )}
-
-                        {/* Claim Text */}
-                        <h3 className="text-base font-semibold text-slate-900 leading-snug break-words">
-                          &quot;{claim.text}&quot;
-                        </h3>
-
-                        {/* Explanation */}
-                        <p className="text-sm text-slate-600 leading-relaxed bg-slate-50 border-l-2 border-slate-300 pl-3 py-1.5 break-words">
-                          <span className="font-semibold text-slate-700">
-                            Verdict Reasoning:
-                          </span>{' '}
-                          {claim.explanation}
-                        </p>
                       </div>
 
-                      {/* Expandable Evidence Details */}
-                      {isExpanded && (
-                        <div className="border-t border-slate-200 bg-slate-50/50 p-5 space-y-3">
-                          <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                            Supporting & Contradicting Evidence ({claim.evidence.length})
-                          </h3>
+                      {/* Evidence */}
+                      {isOpen && (
+                        <div className="px-4 pb-4 space-y-2 anim-in"
+                             style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                          <span className="block pt-3 text-[10px] font-bold uppercase tracking-wider mb-1"
+                                style={{ color: 'var(--ink-3)', letterSpacing: '0.08em' }}>
+                            Evidence ({claim.evidence.length})
+                          </span>
                           {claim.evidence.length === 0 ? (
-                            <p className="text-xs text-slate-500 italic">
-                              No external evidence met the relevance threshold for this claim.
+                            <p className="text-xs italic" style={{ color: 'var(--ink-3)' }}>
+                              No evidence met the relevance threshold.
                             </p>
                           ) : (
-                            <div className="space-y-3">
-                              {claim.evidence.map((ev) => {
-                                const relDisplay = Math.round(
-                                  ev.relevanceScore > 1
-                                    ? ev.relevanceScore
-                                    : ev.relevanceScore * 100
-                                );
-                                return (
-                                  <div
-                                    key={ev.id}
-                                    className="bg-white border border-slate-200 rounded-lg p-4 space-y-2 text-sm"
-                                  >
-                                    <div className="flex flex-wrap items-center justify-between gap-2">
-                                      <div className="flex flex-wrap items-center gap-2">
-                                        {getEvidenceStanceBadge(ev.stance)}
-                                        {getEvidenceBasisBadge(ev.evidenceBasis)}
-                                        <a
-                                          href={ev.url}
-                                          target="_blank"
-                                          rel="noopener noreferrer"
-                                          className="font-semibold text-slate-900 hover:text-blue-600 inline-flex items-center gap-1.5 hover:underline break-all focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:outline-none rounded"
-                                        >
-                                          {ev.title}
-                                          <ExternalLink className="w-3.5 h-3.5 text-slate-400 shrink-0" aria-hidden="true" />
-                                        </a>
-                                      </div>
-                                      <div className="flex items-center gap-2 text-xs">
-                                        <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-mono">
-                                          {ev.domain}
-                                        </span>
-                                        <span className="text-slate-500 font-medium">
-                                          Relevance: {relDisplay}%
-                                        </span>
-                                      </div>
-                                    </div>
-                                    <blockquote className="text-xs text-slate-700 italic bg-slate-50 border-l-2 border-slate-300 p-2.5 rounded-r break-words">
-                                      &quot;{ev.excerpt}&quot;
-                                    </blockquote>
+                            claim.evidence.map((ev) => {
+                              const rel = pct(ev.relevanceScore);
+                              return (
+                                <div key={ev.id} className="rounded-md p-3 space-y-2"
+                                     style={{ background: 'var(--bg-inset)', border: '1px solid var(--border-subtle)' }}>
+                                  {/* Badges row */}
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    <StanceBadge s={ev.stance} />
+                                    <BasisBadge b={ev.evidenceBasis} />
+                                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded"
+                                          style={{ background: 'var(--accent-dim)', color: 'var(--accent-text)' }}>
+                                      Origin {ev.originGroupId}
+                                    </span>
+                                    <span className="ml-auto text-[10px] font-mono" style={{ color: 'var(--ink-3)' }}>
+                                      {rel}%
+                                    </span>
                                   </div>
-                                );
-                              })}
-                            </div>
+
+                                  {/* Title + domain */}
+                                  <div className="flex items-start justify-between gap-2">
+                                    <a href={ev.url} target="_blank" rel="noopener noreferrer"
+                                       className="text-xs font-semibold inline-flex items-center gap-1 hover:underline break-all tr rounded"
+                                       style={{ color: 'var(--ink)' }}>
+                                      {ev.title}
+                                      <ExternalLink className="w-3 h-3 shrink-0" style={{ color: 'var(--ink-3)' }} />
+                                    </a>
+                                    <span className="text-[10px] font-mono shrink-0 px-1.5 py-0.5 rounded"
+                                          style={{ background: 'var(--bg-overlay)', color: 'var(--ink-3)' }}>
+                                      {ev.domain}
+                                    </span>
+                                  </div>
+
+                                  {/* Excerpt */}
+                                  <p className="text-[11px] leading-relaxed italic rounded px-2.5 py-2"
+                                     style={{ color: 'var(--ink-2)', background: 'var(--bg)' }}>
+                                    &ldquo;{ev.excerpt}&rdquo;
+                                  </p>
+                                </div>
+                              );
+                            })
                           )}
                         </div>
                       )}
@@ -733,11 +712,12 @@ export default function Home() {
         )}
       </main>
 
-      {/* Footer */}
-      <footer className="border-t border-slate-200 bg-white py-4 mt-auto">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 flex items-center justify-between text-xs text-slate-500">
-          <span>VerityGraph MVP — Evidence-First Multi-Agent Research System</span>
-          <span>Google Gemini & Tavily Extract Engine</span>
+      {/* ── Footer ──────────────────────────────────── */}
+      <footer className="mt-auto" style={{ borderTop: '1px solid var(--border-subtle)' }}>
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between text-[11px]"
+             style={{ color: 'var(--ink-3)' }}>
+          <span>VerityGraph</span>
+          <span>Gemini · Tavily</span>
         </div>
       </footer>
     </div>
