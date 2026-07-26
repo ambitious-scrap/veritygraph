@@ -1,6 +1,6 @@
 import { GoogleGenAI, Type } from '@google/genai';
 import { z } from 'zod';
-import { RawSource, CandidateEvidence } from './tavily';
+import { RawSource, CandidateEvidence, fetchWithTimeout } from './tavily';
 import {
   Claim,
   ClaimVerdict,
@@ -65,6 +65,20 @@ const synthesisSchema = z
     summary: z.string().min(40).max(1200),
   })
   .strict();
+
+const openRouterCompletionSchema = z.object({
+  choices: z
+    .array(
+      z.object({
+        message: z.object({
+          content: z.string().nullable().optional(),
+        }),
+      })
+    )
+    .optional()
+    .default([]),
+});
+
 const GEMINI_TIMEOUT_MS = 20000;
 
 /**
@@ -152,19 +166,47 @@ async function callGeminiJson<T>(
   customValidator?: (val: T) => void
 ): Promise<GeminiCallResult<T>> {
   const tryCall = async (apiKey: string): Promise<T> => {
-    const ai = new GoogleGenAI({ apiKey });
-    const apiPromise = ai.models.generateContent({
-      model: modelName,
-      contents: prompt,
-      config: {
-        responseMimeType: 'application/json',
-        ...(responseSchema ? { responseSchema } : {}),
-      },
-    });
+    let text = '';
+    if (apiKey.startsWith('sk-or-v1-')) {
+      const targetModel = modelName.includes('/') ? modelName : `google/${modelName}`;
+      const resPromise = fetchWithTimeout('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: targetModel,
+          messages: [{ role: 'user', content: prompt }],
+          response_format: { type: 'json_object' },
+          max_tokens: 2000,
+        }),
+      });
 
-    const response = await withTimeout(apiPromise);
-    const text = response.text || '';
+      const res = await withTimeout(resPromise);
+      if (!res.ok) {
+        throw new Error(`OpenRouter HTTP error status (${res.status})`);
+      }
 
+      const data = await res.json();
+      const openRouterParsed = openRouterCompletionSchema.safeParse(data);
+      if (openRouterParsed.success) {
+        text = openRouterParsed.data.choices[0]?.message?.content || '';
+      }
+    } else {
+      const ai = new GoogleGenAI({ apiKey });
+      const apiPromise = ai.models.generateContent({
+        model: modelName,
+        contents: prompt,
+        config: {
+          responseMimeType: 'application/json',
+          ...(responseSchema ? { responseSchema } : {}),
+        },
+      });
+
+      const response = await withTimeout(apiPromise);
+      text = response.text || '';
+    }
     if (!text.trim()) {
       throw { kind: 'invalid-output', message: 'Empty model response text' } as CategorizedError;
     }
