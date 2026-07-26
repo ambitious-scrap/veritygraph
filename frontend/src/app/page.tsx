@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   ShieldCheck,
   CheckCircle2,
@@ -26,8 +26,12 @@ import {
   Check,
   Cpu,
   Minus,
+  ChevronLeft,
+  ChevronRight,
+  Pause,
+  Play,
 } from 'lucide-react';
-import { MOCK_RESEARCH_RUN } from '@/lib/mockData';
+import { DEMO_SCENARIOS } from '@/lib/mockData';
 import {
   Claim,
   ClaimVerdict,
@@ -144,7 +148,27 @@ export default function Home() {
   const [whyOpen, setWhyOpen] = useState<Record<string, boolean>>({});
   const [reverifying, setReverifying] = useState<Record<string, boolean>>({});
   const [copied, setCopied] = useState<string | null>(null);
+  const [demoIndex, setDemoIndex] = useState(0);
+  const [isDemoCycling, setIsDemoCycling] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  const applyDemo = useCallback((index: number) => {
+    const normalizedIndex = (index + DEMO_SCENARIOS.length) % DEMO_SCENARIOS.length;
+    const scenario = DEMO_SCENARIOS[normalizedIndex];
+    setDemoIndex(normalizedIndex);
+    setSelectedMode(scenario.mode);
+    setQuery(scenario.run.query);
+    setError(null);
+    setRun({ ...scenario.run, createdAt: new Date().toISOString() });
+    setOpen({});
+    setWhyOpen({});
+  }, []);
+
+  useEffect(() => {
+    if (!isDemoCycling) return;
+    const timer = window.setTimeout(() => applyDemo(demoIndex + 1), 6500);
+    return () => window.clearTimeout(timer);
+  }, [applyDemo, demoIndex, isDemoCycling]);
 
   useEffect(() => {
     if (!isAnalyzing) return;
@@ -163,7 +187,7 @@ export default function Home() {
       if (t.length < 10) { setError({ message: 'Query must be at least 10 characters.', stage: 'input' }); return; }
       if (t.length > 500) { setError({ message: 'Query must be at most 500 characters.', stage: 'input' }); return; }
     }
-    setIsAnalyzing(true); setStageIndex(0); setError(null);
+    setIsAnalyzing(true); setStageIndex(0); setError(null); setIsDemoCycling(false);
     try {
       const res = await fetch('/api/research', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -181,20 +205,16 @@ export default function Home() {
   };
 
   const loadExample = () => {
+    setIsDemoCycling(false);
     setSelectedMode('research');
     setQuery('Does coffee consumption decrease overall mortality and cardiovascular disease risk?');
     setError(null);
     inputRef.current?.focus();
   };
 
-  const loadDemo = () => {
-    setSelectedMode('audit');
-    setQuery(MOCK_RESEARCH_RUN.query);
-    setError(null);
-    setRun({ ...MOCK_RESEARCH_RUN, createdAt: new Date().toISOString() });
-    setOpen({});
-    setWhyOpen({});
-  };
+  const loadDemo = () => applyDemo(demoIndex);
+  const previousDemo = () => applyDemo(demoIndex - 1);
+  const nextDemo = () => applyDemo(demoIndex + 1);
 
   const toggle = (id: string) => setOpen((p) => ({ ...p, [id]: !p[id] }));
   const toggleWhy = (id: string) => setWhyOpen((p) => ({ ...p, [id]: !p[id] }));
@@ -405,7 +425,7 @@ export default function Home() {
               style={{ background: 'var(--accent)', color: '#fff' }}>
               Start verifying <ArrowRight className="w-3.5 h-3.5" />
             </button>
-            <button type="button" onClick={loadDemo}
+            <button type="button" onClick={() => { loadDemo(); setIsDemoCycling(true); }}
               className="inline-flex min-h-11 items-center justify-center gap-2 px-5 py-2.5 text-sm font-semibold rounded-lg tr"
               style={{ background: 'var(--bg-raised)', color: 'var(--ink-2)', border: '1px solid var(--border)' }}>
               <Database className="w-3.5 h-3.5" /> See a demo
@@ -500,6 +520,62 @@ export default function Home() {
                   <Database className="w-3 h-3" /> Load demo
                 </button>
               </div>
+              <div className="mt-4 pt-4" style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--ink-3)' }}>
+                      Demo carousel
+                    </span>
+                    <span className="text-[10px] font-mono" style={{ color: 'var(--accent-text)' }}>
+                      {demoIndex + 1}/{DEMO_SCENARIOS.length}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <button type="button" onClick={() => { setIsDemoCycling(false); previousDemo(); }} aria-label="Previous demo"
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-md tr"
+                      style={{ color: 'var(--ink-2)', background: 'var(--bg-overlay)', border: '1px solid var(--border-subtle)' }}>
+                      <ChevronLeft className="w-3.5 h-3.5" />
+                    </button>
+                    <button type="button" onClick={() => { setIsDemoCycling(false); nextDemo(); }} aria-label="Next demo"
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-md tr"
+                      style={{ color: 'var(--ink-2)', background: 'var(--bg-overlay)', border: '1px solid var(--border-subtle)' }}>
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    </button>
+                    <button type="button" onClick={() => setIsDemoCycling((current) => !current)}
+                      className="inline-flex min-h-8 items-center gap-1.5 px-2.5 rounded-md text-[10px] font-semibold tr"
+                      style={{ color: isDemoCycling ? 'var(--accent-text)' : 'var(--ink-2)', background: isDemoCycling ? 'var(--accent-dim)' : 'var(--bg-overlay)', border: '1px solid var(--border-subtle)' }}>
+                      {isDemoCycling ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
+                      {isDemoCycling ? 'Pause cycle' : 'Cycle demos'}
+                    </button>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-1.5 mt-3">
+                  {DEMO_SCENARIOS.map((scenario, index) => (
+                    <button key={scenario.id} type="button" onClick={() => { setIsDemoCycling(false); applyDemo(index); }}
+                      aria-pressed={demoIndex === index}
+                      className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[10px] font-semibold tr"
+                      style={{
+                        color: demoIndex === index ? 'var(--accent-text)' : 'var(--ink-3)',
+                        background: demoIndex === index ? 'var(--accent-dim)' : 'var(--bg-overlay)',
+                        border: `1px solid ${demoIndex === index ? 'var(--focus)' : 'var(--border-subtle)'}`,
+                      }}>
+                      <span className="h-1.5 w-1.5 rounded-full" style={{ background: demoIndex === index ? 'var(--accent)' : 'var(--ink-3)' }} />
+                      {scenario.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="mt-3 flex items-center gap-2">
+                  <div className="flex flex-1 gap-1" aria-hidden="true">
+                    {DEMO_SCENARIOS.map((scenario, index) => (
+                      <span key={scenario.id} className={`h-1 flex-1 rounded-full ${isDemoCycling && demoIndex === index ? 'demo-cycle-progress' : ''}`}
+                        style={{ background: demoIndex === index ? 'var(--accent)' : 'var(--border)' }} />
+                    ))}
+                  </div>
+                  <span className="text-[10px] truncate max-w-[18rem]" style={{ color: 'var(--ink-3)' }}>
+                    {DEMO_SCENARIOS[demoIndex].description}
+                  </span>
+                </div>
+              </div>
             </form>
           </div>
         </section>
@@ -531,12 +607,18 @@ export default function Home() {
 
 
         {run && (
-          <div className="space-y-6 anim-in">
+          <div key={run.id} className="space-y-6 anim-in demo-run">
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg p-3"
                  style={{ background: 'var(--bg-raised)', border: '1px solid var(--border-subtle)' }}>
               <span className="text-[11px] font-bold uppercase tracking-wider" style={{ color: 'var(--ink-3)' }}>
                 {run.workflowMode === 'audit' ? 'AI answer audit' : 'Research verification'}
               </span>
+              {run.mode === 'demo' && (
+                <span className="inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-semibold"
+                  style={{ color: 'var(--accent-text)', background: 'var(--accent-dim)', border: '1px solid var(--focus)' }}>
+                  <Database className="w-3 h-3" /> Demo {demoIndex + 1}/{DEMO_SCENARIOS.length}
+                </span>
+              )}
               <div className="flex flex-wrap gap-2">
                 <button type="button" onClick={() => exportReport('md')}
                   className="inline-flex min-h-11 items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold rounded-md tr"
