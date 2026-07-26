@@ -1,6 +1,6 @@
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI } from '@google/genai';
 import { z } from 'zod';
-import { RawSource, CandidateEvidence } from './tavily';
+import { RawSource, CandidateEvidence, fetchWithTimeout } from './tavily';
 import { Claim, ClaimVerdict, Evidence } from './types';
 
 export interface ExtractedClaim {
@@ -38,7 +38,62 @@ const geminiSynthesisSchema = z.object({
 });
 
 /**
- * Stage 2: Claim Extraction with Gemini
+ * Unified JSON generation helper supporting direct Google Gemini API & OpenRouter
+ */
+async function callGeminiJson<T>(
+  prompt: string,
+  apiKey: string,
+  modelName: string,
+  schema: z.ZodSchema<T>
+): Promise<T> {
+  const isOpenRouter = apiKey.startsWith('sk-or-v1-');
+
+  if (isOpenRouter) {
+    const targetModel = modelName.startsWith('google/')
+      ? modelName
+      : `google/${modelName}`;
+
+    const res = await fetchWithTimeout('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: targetModel,
+        messages: [{ role: 'user', content: prompt }],
+        response_format: { type: 'json_object' },
+        max_tokens: 2000,
+      }),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`OpenRouter API error (${res.status}): ${errText}`);
+    }
+
+    const data = await res.json();
+    const content = data.choices?.[0]?.message?.content || '';
+    const rawJson = JSON.parse(content);
+    return schema.parse(rawJson);
+  } else {
+    const ai = new GoogleGenAI({ apiKey });
+    const response = await ai.models.generateContent({
+      model: modelName,
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json',
+      },
+    });
+
+    const text = response.text || '';
+    const rawJson = JSON.parse(text);
+    return schema.parse(rawJson);
+  }
+}
+
+/**
+ * Stage 2: Claim Extraction with Gemini / OpenRouter
  */
 export async function extractClaimsWithGemini(
   query: string,
@@ -46,8 +101,6 @@ export async function extractClaimsWithGemini(
   apiKey: string,
   modelName: string
 ): Promise<ExtractedClaim[]> {
-  const ai = new GoogleGenAI({ apiKey });
-
   const prompt = `You are a scientific fact-verification system.
 User Query: "${query}"
 
@@ -62,39 +115,21 @@ Task: Extract EXACTLY 3 atomic, specific, independently verifiable, important cl
 For each claim, generate a target search query to find supporting evidence (supportQuery) and a target search query to find challenging/opposing evidence (challengeQuery).
 
 Do NOT include citations, URLs, or external markdown in any field.
-Respond with JSON matching the required schema.`;
+Respond ONLY with a JSON array of 3 objects containing "text", "supportQuery", and "challengeQuery".`;
 
   try {
-    const response = await ai.models.generateContent({
-      model: modelName,
-      contents: prompt,
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              text: { type: Type.STRING },
-              supportQuery: { type: Type.STRING },
-              challengeQuery: { type: Type.STRING },
-            },
-            required: ['text', 'supportQuery', 'challengeQuery'],
-          },
-        },
-      },
-    });
+    const claims = await callGeminiJson(
+      prompt,
+      apiKey,
+      modelName,
+      claimExtractionSchema
+    );
 
-    const responseText = response.text || '';
-    const rawJson = JSON.parse(responseText);
-    const parsed = claimExtractionSchema.safeParse(rawJson);
-
-    if (!parsed.success || parsed.data.length === 0) {
-      throw new Error('Gemini failed to extract valid claims schema');
+    if (claims.length === 0) {
+      throw new Error('No claims extracted');
     }
 
-    // Ensure exactly 3 claims
-    return parsed.data.slice(0, 3);
+    return claims.slice(0, 3);
   } catch (error) {
     const msg = error instanceof Error ? error.message : 'Unknown error';
     throw new Error(`Claim extraction failed: ${msg}`);
@@ -102,7 +137,7 @@ Respond with JSON matching the required schema.`;
 }
 
 /**
- * Stage 4: Claim Verification with Gemini
+ * Stage 4: Claim Verification with Gemini / OpenRouter
  */
 export async function verifyClaimWithGemini(
   claimText: string,
@@ -111,8 +146,6 @@ export async function verifyClaimWithGemini(
   apiKey: string,
   modelName: string
 ): Promise<Claim> {
-  const ai = new GoogleGenAI({ apiKey });
-
   const sourcesList = candidateEvidence
     .map((e) => `[Source ID: ${e.id}]\nTitle: ${e.title}\nDomain: ${e.domain}\nExcerpt: ${e.excerpt}`)
     .join('\n\n');
@@ -129,7 +162,8 @@ Evaluate the claim ONLY using the supplied evidence sources above.
 2. Assign a confidence score from 0 to 100.
 3. Provide a concise 1-2 sentence explanation of the reasoning.
 4. List the evidence sources evaluated, assessing each source stance ("support", "contradict", or "neutral") and a relevance score (0 to 100).
-Do not reference any source ID that is not listed in the retrieved evidence sources above.`;
+Do not reference any source ID that is not listed in the retrieved evidence sources above.
+Respond ONLY with JSON containing: "verdict", "confidence", "explanation", and "evidence" array.`;
 
   let rawVerdict: ClaimVerdict = 'insufficient';
   let rawConfidence = 40;
@@ -138,50 +172,18 @@ Do not reference any source ID that is not listed in the retrieved evidence sour
 
   if (candidateEvidence.length > 0) {
     try {
-      const response = await ai.models.generateContent({
-        model: modelName,
-        contents: prompt,
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              verdict: {
-                type: Type.STRING,
-                enum: ['supported', 'contradicted', 'partial', 'insufficient'],
-              },
-              confidence: { type: Type.NUMBER },
-              explanation: { type: Type.STRING },
-              evidence: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    sourceId: { type: Type.STRING },
-                    stance: { type: Type.STRING },
-                    relevanceScore: { type: Type.NUMBER },
-                  },
-                  required: ['sourceId', 'stance', 'relevanceScore'],
-                },
-              },
-            },
-            required: ['verdict', 'confidence', 'explanation', 'evidence'],
-          },
-        },
-      });
-
-      const text = response.text || '';
-      const rawJson = JSON.parse(text);
-      const parsed = geminiRawVerificationSchema.safeParse(rawJson);
-
-      if (parsed.success) {
-        rawVerdict = parsed.data.verdict;
-        rawConfidence = parsed.data.confidence;
-        explanation = parsed.data.explanation;
-        rawEvidenceItems = parsed.data.evidence;
-      }
+      const parsed = await callGeminiJson(
+        prompt,
+        apiKey,
+        modelName,
+        geminiRawVerificationSchema
+      );
+      rawVerdict = parsed.verdict;
+      rawConfidence = parsed.confidence;
+      explanation = parsed.explanation;
+      rawEvidenceItems = parsed.evidence;
     } catch {
-      // Fall back to default insufficient evaluation if model parsing fails
+      // Fall back to default insufficient evaluation if model call fails
     }
   }
 
@@ -259,7 +261,7 @@ Do not reference any source ID that is not listed in the retrieved evidence sour
 }
 
 /**
- * Stage 5: Synthesis with Gemini
+ * Stage 5: Synthesis with Gemini / OpenRouter
  */
 export async function synthesizeReportWithGemini(
   query: string,
@@ -267,8 +269,6 @@ export async function synthesizeReportWithGemini(
   apiKey: string,
   modelName: string
 ): Promise<string> {
-  const ai = new GoogleGenAI({ apiKey });
-
   const claimSummary = claims
     .map(
       (c) =>
@@ -286,29 +286,16 @@ Task: Write a concise 2–4 sentence executive summary of the research findings.
 Requirements:
 1. Acknowledge uncertainty and any contradictions in the evidence.
 2. Do NOT introduce any new facts or claims not listed above.
-Respond in JSON matching the schema.`;
+Respond ONLY with JSON object containing "summary".`;
 
   try {
-    const response = await ai.models.generateContent({
-      model: modelName,
-      contents: prompt,
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            summary: { type: Type.STRING },
-          },
-          required: ['summary'],
-        },
-      },
-    });
-
-    const text = response.text || '';
-    const parsed = geminiSynthesisSchema.safeParse(JSON.parse(text));
-    if (parsed.success) {
-      return parsed.data.summary;
-    }
+    const parsed = await callGeminiJson(
+      prompt,
+      apiKey,
+      modelName,
+      geminiSynthesisSchema
+    );
+    return parsed.summary;
   } catch {
     // Fallback if synthesis model call fails
   }
