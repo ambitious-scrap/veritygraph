@@ -19,7 +19,6 @@ import {
   Globe,
   Clock,
   Layers,
-  ArrowRight,
   FileCode,
   Download,
   Copy,
@@ -258,14 +257,12 @@ export default function Home() {
             </span>
             <span className="hidden sm:inline-flex text-[10px] font-mono px-2 py-0.5 rounded"
                   style={{ color: 'var(--ink-3)', background: 'var(--bg-overlay)' }}>
-              proof-carrying research
+              evidence workspace
             </span>
           </div>
-          <button type="button" onClick={() => inputRef.current?.focus()}
-            className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[11px] font-semibold tr"
-            style={{ color: 'var(--ink-2)', background: 'var(--bg-raised)', border: '1px solid var(--border-subtle)' }}>
-            Open verifier <ArrowRight className="w-3 h-3" />
-          </button>
+          <span className="text-[10px] font-mono" style={{ color: 'var(--ink-3)' }}>
+            claim-level verification
+          </span>
         </div>
       </header>
 
@@ -275,35 +272,23 @@ export default function Home() {
             <div className="inline-flex items-center gap-2 rounded-full px-3 py-1 mb-5"
                  style={{ color: 'var(--accent-text)', background: 'var(--accent-dim)', border: '1px solid oklch(0.34 0.08 30)' }}>
               <Cpu className="w-3.5 h-3.5" />
-              <span className="text-[11px] font-bold">Verification compiler for AI-generated knowledge</span>
+              <span className="text-[11px] font-bold">Evidence checker for research and AI answers</span>
             </div>
             <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold tracking-tight leading-[0.96] max-w-3xl"
                 style={{ color: 'var(--ink)', letterSpacing: '-0.055em' }}>
               Make every claim carry its evidence.
             </h1>
             <p className="text-base sm:text-lg leading-relaxed mt-5 max-w-2xl" style={{ color: 'var(--ink-2)' }}>
-              VerityGraph turns research prompts and AI answers into auditable claim graphs: extracted claims, opposing evidence, source passages, confidence factors, and a pass / warning / fail build result.
+              Turn a research query or AI answer into a clear evidence trail: atomic claims, source passages, confidence, and a build result you can inspect.
             </p>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 mt-6 max-w-2xl">
-              {[
-                ['Atomic claims', 'Break broad answers into verifiable units.'],
-                ['Challenge search', 'Look for support and contradiction.'],
-                ['Proof report', 'Export the evidence trail.'],
-              ].map(([title, body]) => (
-                <div key={title} className="rounded-lg p-3" style={{ background: 'var(--bg-raised)', border: '1px solid var(--border-subtle)' }}>
-                  <span className="text-xs font-bold block" style={{ color: 'var(--ink)' }}>{title}</span>
-                  <span className="text-[11px] leading-relaxed block mt-1" style={{ color: 'var(--ink-3)' }}>{body}</span>
-                </div>
-              ))}
-            </div>
           </div>
 
           <aside className="lg:col-span-5 anim-in" style={{ animationDelay: '80ms' }}>
             <div className="rounded-2xl p-4 sm:p-5 shadow-2xl" style={{ background: 'var(--bg-raised)', border: '1px solid var(--border)' }}>
               <div className="flex items-center justify-between mb-3">
                 <span className="text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--ink-3)', letterSpacing: '0.1em' }}>
-                  Live workspace
+                  Verification workspace
                 </span>
                 {run ? <BuildBadge s={run.buildResult.status} /> : (
                   <span className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-semibold" style={{ color: 'var(--accent-text)', background: 'var(--accent-dim)' }}>
@@ -313,21 +298,21 @@ export default function Home() {
               </div>
 
               <div className="flex gap-2 mb-3" role="tablist" aria-label="Workflow mode">
-                <button type="button" onClick={() => setSelectedMode('research')} aria-pressed={selectedMode === 'research'}
-                  className="inline-flex flex-1 items-center justify-center gap-1.5 px-3 py-2 text-[11px] font-bold rounded-md tr"
+                <button type="button" role="tab" onClick={() => setSelectedMode('research')} aria-selected={selectedMode === 'research'}
+                  className="inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 px-3 py-2 text-[11px] font-bold rounded-md tr"
                   style={{ background: selectedMode === 'research' ? 'var(--accent-dim)' : 'var(--bg-overlay)', color: selectedMode === 'research' ? 'var(--accent-text)' : 'var(--ink-2)', border: '1px solid var(--border-subtle)' }}>
                   <Search className="w-3 h-3" /> Research
                 </button>
-                <button type="button" onClick={() => setSelectedMode('audit')} aria-pressed={selectedMode === 'audit'}
-                  className="inline-flex flex-1 items-center justify-center gap-1.5 px-3 py-2 text-[11px] font-bold rounded-md tr"
+                <button type="button" role="tab" onClick={() => setSelectedMode('audit')} aria-selected={selectedMode === 'audit'}
+                  className="inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 px-3 py-2 text-[11px] font-bold rounded-md tr"
                   style={{ background: selectedMode === 'audit' ? 'var(--accent-dim)' : 'var(--bg-overlay)', color: selectedMode === 'audit' ? 'var(--accent-text)' : 'var(--ink-2)', border: '1px solid var(--border-subtle)' }}>
                   <Cpu className="w-3 h-3" /> Audit
                 </button>
               </div>
 
               <form onSubmit={handleVerify} className="space-y-3">
-                <label htmlFor="research-query" className="sr-only">
-                  {selectedMode === 'audit' ? 'Paste AI-generated answer' : 'Enter research query'}
+                <label htmlFor="research-query" className="block text-xs font-semibold" style={{ color: 'var(--ink)' }}>
+                  {selectedMode === 'audit' ? 'AI answer or report' : 'Research claim or question'}
                 </label>
                 <textarea
                   ref={inputRef}
@@ -336,13 +321,13 @@ export default function Home() {
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   disabled={isAnalyzing}
-                  placeholder={selectedMode === 'audit' ? 'Paste an AI-generated answer or report to audit...' : 'Enter a research hypothesis or claim to verify...'}
+                  placeholder={selectedMode === 'audit' ? 'Paste the answer or report you want to check...' : 'Enter a claim or question to verify...'}
                   className="w-full h-32 rounded-lg px-4 py-3 text-sm resize-none overflow-y-auto tr disabled:opacity-40"
                   style={{ background: 'var(--bg-inset)', color: 'var(--ink)', border: '1px solid var(--border)' }}
                 />
                 <div className="flex flex-wrap gap-2">
                   <button type="submit" disabled={isAnalyzing || !query.trim()}
-                    className="inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-lg disabled:opacity-30 tr"
+                    className="inline-flex min-h-11 items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-lg disabled:opacity-30 tr"
                     style={{ background: 'var(--accent)', color: '#fff' }}
                     onMouseEnter={(e) => { if (!e.currentTarget.disabled) e.currentTarget.style.background = 'var(--accent-hover)'; }}
                     onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--accent)'; }}>
@@ -356,14 +341,14 @@ export default function Home() {
                     )}
                   </button>
                   <button type="button" onClick={loadExample} disabled={isAnalyzing}
-                    className="inline-flex items-center gap-1 px-3 py-2 text-[11px] font-medium rounded-md disabled:opacity-30 tr"
+                    className="inline-flex min-h-11 items-center gap-1 px-3 py-2 text-[11px] font-medium rounded-md disabled:opacity-30 tr"
                     style={{ background: 'var(--bg-overlay)', color: 'var(--ink-2)', border: '1px solid var(--border-subtle)' }}>
-                    <RefreshCw className="w-3 h-3" /> Example
+                    <RefreshCw className="w-3 h-3" /> Use example
                   </button>
                   <button type="button" onClick={loadDemo} disabled={isAnalyzing}
-                    className="inline-flex items-center gap-1 px-3 py-2 text-[11px] font-medium rounded-md disabled:opacity-30 tr"
+                    className="inline-flex min-h-11 items-center gap-1 px-3 py-2 text-[11px] font-medium rounded-md disabled:opacity-30 tr"
                     style={{ background: 'var(--bg-overlay)', color: 'var(--ink-2)', border: '1px solid var(--border-subtle)' }}>
-                    <Database className="w-3 h-3" /> Demo
+                    <Database className="w-3 h-3" /> Load demo
                   </button>
                 </div>
               </form>
@@ -396,32 +381,6 @@ export default function Home() {
           ))}
         </section>
 
-        {!run && !isAnalyzing && (
-          <section className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6 anim-in">
-            <div className="lg:col-span-2 rounded-xl p-5" style={{ background: 'var(--bg-raised)', border: '1px solid var(--border-subtle)' }}>
-              <h2 className="text-sm font-bold mb-2" style={{ color: 'var(--ink)' }}>What the verifier returns</h2>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                {[
-                  ['Build result', 'Pass / warning / fail for the answer as a whole.'],
-                  ['Claim graph', 'Every atomic claim gets a verdict and confidence cap.'],
-                  ['Evidence trail', 'Source passages, domains, stance, and next search query.'],
-                ].map(([title, body]) => (
-                  <div key={title} className="rounded-lg p-3" style={{ background: 'var(--bg-inset)', border: '1px solid var(--border-subtle)' }}>
-                    <span className="text-xs font-bold block" style={{ color: 'var(--ink)' }}>{title}</span>
-                    <span className="text-[11px] leading-relaxed block mt-1" style={{ color: 'var(--ink-3)' }}>{body}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-            <div className="rounded-xl p-5" style={{ background: 'var(--accent-dim)', border: '1px solid oklch(0.34 0.08 30)' }}>
-              <span className="text-[10px] font-bold uppercase tracking-wider" style={{ color: 'var(--accent-text)' }}>Primary action</span>
-              <p className="text-sm mt-2 mb-4" style={{ color: 'var(--ink)' }}>Paste a claim, prompt, or answer. VerityGraph compiles the evidence record.</p>
-              <button type="button" onClick={loadDemo} className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold tr" style={{ background: 'var(--accent)', color: '#fff' }}>
-                Load demo <ArrowRight className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          </section>
-        )}
 
         {run && (
           <div className="space-y-5 anim-in">
@@ -432,14 +391,14 @@ export default function Home() {
               </span>
               <div className="flex gap-2">
                 <button type="button" onClick={() => exportReport('md')}
-                  className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold rounded-md tr"
+                  className="inline-flex min-h-11 items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold rounded-md tr"
                   style={{ background: 'var(--bg-overlay)', color: 'var(--ink-2)', border: '1px solid var(--border-subtle)' }}>
-                  <Download className="w-3 h-3" /> Export Markdown
+                  <Download className="w-3 h-3" /> Download Markdown
                 </button>
                 <button type="button" onClick={() => exportReport('json')}
-                  className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold rounded-md tr"
+                  className="inline-flex min-h-11 items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold rounded-md tr"
                   style={{ background: 'var(--bg-overlay)', color: 'var(--ink-2)', border: '1px solid var(--border-subtle)' }}>
-                  <FileCode className="w-3 h-3" /> Export JSON
+                  <FileCode className="w-3 h-3" /> Download JSON
                 </button>
               </div>
             </div>

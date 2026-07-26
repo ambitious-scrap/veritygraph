@@ -149,3 +149,15 @@ body {
   transition-duration: var(--dur);
   transition-timing-function: var(--ease);
 }
+
+.tr:hover:not(:disabled) {
+  filter: brightness(1.12);
+}
+
+.tr:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.tr:disabled {
+  cursor: not-allowed;
+}
