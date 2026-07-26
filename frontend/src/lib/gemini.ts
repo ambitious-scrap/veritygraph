@@ -138,15 +138,23 @@ function classifyError(error: unknown): CategorizedError {
   }
 
   if (
-    lowerMsg.includes('400') ||
-    lowerMsg.includes('401') ||
-    lowerMsg.includes('403') ||
-    lowerMsg.includes('404') ||
-    lowerMsg.includes('invalid model') ||
-    lowerMsg.includes('not found') ||
-    lowerMsg.includes('key not valid')
+    name === 'TimeoutError' ||
+    lowerMsg.includes('429') ||
+    lowerMsg.includes('500') ||
+    lowerMsg.includes('502') ||
+    lowerMsg.includes('503') ||
+    lowerMsg.includes('quota') ||
+    lowerMsg.includes('rate limit') ||
+    lowerMsg.includes('resource_exhausted') ||
+    lowerMsg.includes('overloaded') ||
+    lowerMsg.includes('unavailable') ||
+    lowerMsg.includes('network') ||
+    lowerMsg.includes('fetch failed') ||
+    lowerMsg.includes('econnreset') ||
+    lowerMsg.includes('etimedout') ||
+    lowerMsg.includes('openrouter')
   ) {
-    return { kind: 'non-retryable-provider', message: 'Invalid model configuration or key permissions' };
+    return { kind: 'retryable-provider', message: 'Provider temporary unavailability or rate limit' };
   }
 
   return { kind: 'invalid-output', message: msg || 'Model output processing failure' };
