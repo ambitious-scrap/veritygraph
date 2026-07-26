@@ -1,0 +1,889 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="VerityGraph — every claim must earn its evidence.">
+    <title>VerityGraph — Proof-Carrying Research</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        /* === THEME TOKENS === */
+        :root {
+            --paper: #e9edf0;
+            --paper-deep: #dbe3e7;
+            --ink: #111b22;
+            --ink-soft: #35434b;
+            --muted: #61707a;
+            --line: #a9b8bf;
+            --signal: #00a8c7;
+            --signal-soft: rgba(0, 168, 199, .16);
+            --hot: #f15a45;
+            --hot-soft: rgba(241, 90, 69, .14);
+            --pass: #198b70;
+            --warn: #b67818;
+            --fail: #c44239;
+            --display: "Instrument Serif", Georgia, serif;
+            --body: "Manrope", Arial, sans-serif;
+            --mono: "DM Mono", monospace;
+            --ease: cubic-bezier(.16, 1, .3, 1);
+            --slide-bg: var(--paper);
+            --stage-bg: #c7d0d6;
+        }
+
+        /* === BASE RESET === */
+        *, *::before, *::after { box-sizing: border-box; }
+        body { color: var(--ink); font-family: var(--body); }
+        button { font: inherit; }
+
+        /* === MANDATORY FIXED-STAGE CSS === */
+        /* ===========================================
+           FIXED 16:9 STAGE: MANDATORY BASE STYLES
+           Include this ENTIRE file in every presentation.
+           Slides are authored at 1920×1080 and scaled as a whole.
+           =========================================== */
+
+        /* 1. Lock the browser viewport */
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+            background: var(--stage-bg, #000);
+        }
+
+        /* 2. Full-window deck viewport */
+        .deck-viewport {
+            position: fixed;
+            inset: 0;
+            overflow: hidden;
+            background: var(--stage-bg, #000);
+        }
+
+        /* 3. Fixed 16:9 design canvas.
+           JavaScript sets transform: translate(...) scale(...). */
+        .deck-stage {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 1920px;
+            height: 1080px;
+            overflow: hidden;
+            transform-origin: 0 0;
+            background: var(--slide-bg, #fff);
+        }
+
+        /* 4. Slides stack inside the fixed stage.
+           Content must be laid out at 1920×1080, not reflowed per device. */
+        .slide {
+            position: absolute;
+            inset: 0;
+            width: 1920px;
+            height: 1080px;
+            overflow: hidden;
+            display: block;
+            visibility: hidden;
+            opacity: 0;
+            pointer-events: none;
+            background: var(--slide-bg, #fff);
+        }
+
+        .slide.active,
+        .slide.visible {
+            visibility: visible;
+            opacity: 1;
+            pointer-events: auto;
+            z-index: 1;
+        }
+
+        /* 5. Keep media inside authored slide bounds */
+        img,
+        video,
+        canvas,
+        svg {
+            max-width: 100%;
+            max-height: 100%;
+        }
+
+        /* 6. Presentation chrome stays outside the slide design system */
+        .deck-controls {
+            position: fixed;
+            left: 50%;
+            bottom: 22px;
+            transform: translateX(-50%);
+            z-index: 1000;
+        }
+
+        /* 7. Print one fixed-size slide per page */
+        @media print {
+            html,
+            body {
+                width: 1920px;
+                height: auto;
+                overflow: visible;
+                background: #fff;
+            }
+
+            .deck-viewport {
+                position: static;
+                overflow: visible;
+                background: #fff;
+            }
+
+            .deck-stage {
+                position: static;
+                width: auto;
+                height: auto;
+                transform: none !important;
+                background: none;
+            }
+
+            .slide {
+                position: relative;
+                display: block !important;
+                visibility: visible !important;
+                opacity: 1 !important;
+                pointer-events: auto !important;
+                width: 1920px;
+                height: 1080px;
+                break-after: page;
+                page-break-after: always;
+            }
+
+            .slide:last-child {
+                break-after: auto;
+                page-break-after: auto;
+            }
+
+            .deck-controls {
+                display: none !important;
+            }
+        }
+
+        /* 8. Reduced motion */
+        @media (prefers-reduced-motion: reduce) {
+            *,
+            *::before,
+            *::after {
+                animation-duration: 0.01ms !important;
+                transition-duration: 0.2s !important;
+            }
+        }
+
+        /* === STAGE ATMOSPHERE === */
+        .deck-stage {
+            background: var(--paper);
+        }
+        .deck-stage::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            z-index: 20;
+            pointer-events: none;
+            background: linear-gradient(90deg, rgba(255,255,255,.33), transparent 28%, rgba(0,0,0,.025) 100%), repeating-linear-gradient(0deg, transparent 0 78px, rgba(17,27,34,.032) 79px 80px);
+            mix-blend-mode: multiply;
+        }
+        .slide::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            background: radial-gradient(circle at 80% 18%, rgba(0,168,199,.08), transparent 22%), radial-gradient(circle at 18% 84%, rgba(241,90,69,.06), transparent 24%);
+        }
+
+        /* === SHARED DECK CHROME === */
+        .eyebrow, .page-no, .footer, .micro {
+            font-family: var(--mono);
+            letter-spacing: .14em;
+            text-transform: uppercase;
+        }
+        .eyebrow {
+            position: absolute;
+            left: 156px;
+            top: 88px;
+            z-index: 4;
+            font-size: 16px;
+            color: var(--signal);
+        }
+        .page-no {
+            position: absolute;
+            right: 156px;
+            top: 88px;
+            z-index: 4;
+            font-size: 16px;
+            color: var(--muted);
+        }
+        .footer {
+            position: absolute;
+            left: 156px;
+            bottom: 88px;
+            z-index: 4;
+            font-size: 14px;
+            color: var(--muted);
+        }
+        .footer strong { color: var(--ink); font-weight: 500; }
+        .rail {
+            position: absolute;
+            left: 96px;
+            top: 82px;
+            bottom: 82px;
+            width: 4px;
+            z-index: 3;
+            background: var(--ink);
+        }
+        .rail::before, .rail::after {
+            content: "";
+            position: absolute;
+            left: -14px;
+            width: 32px;
+            height: 32px;
+            border: 4px solid var(--signal);
+            background: var(--paper);
+        }
+        .rail::before { top: 14px; }
+        .rail::after { bottom: 14px; border-color: var(--hot); }
+        .rule {
+            position: absolute;
+            width: 54px;
+            height: 4px;
+            background: var(--hot);
+        }
+        .reveal {
+            opacity: 0;
+            transform: translateY(28px);
+            transition: opacity .72s var(--ease), transform .72s var(--ease);
+        }
+        .slide.visible .reveal { opacity: 1; transform: translateY(0); }
+        .slide.visible .reveal:nth-child(2) { transition-delay: .08s; }
+        .slide.visible .reveal:nth-child(3) { transition-delay: .16s; }
+        .slide.visible .reveal:nth-child(4) { transition-delay: .24s; }
+        .slide.visible .reveal:nth-child(5) { transition-delay: .32s; }
+        .slide.visible .reveal:nth-child(6) { transition-delay: .4s; }
+
+        /* === SLIDE 1: TITLE === */
+        .title-slide .title-kicker {
+            position: absolute;
+            left: 156px;
+            top: 282px;
+            z-index: 3;
+            color: var(--hot);
+            font-size: 20px;
+            font-weight: 800;
+            letter-spacing: .15em;
+            text-transform: uppercase;
+        }
+        .title-slide h1 {
+            position: absolute;
+            left: 150px;
+            top: 348px;
+            width: 1080px;
+            z-index: 3;
+            margin: 0;
+            font: 400 124px/.84 var(--display);
+            letter-spacing: -.047em;
+        }
+        .title-slide h1 em { color: var(--signal); font-style: italic; }
+        .title-slide .subtitle {
+            position: absolute;
+            left: 160px;
+            top: 690px;
+            width: 710px;
+            z-index: 3;
+            margin: 0;
+            color: var(--muted);
+            font-size: 25px;
+            line-height: 1.48;
+            font-weight: 500;
+        }
+        .title-slide .team {
+            position: absolute;
+            left: 160px;
+            bottom: 94px;
+            z-index: 3;
+            color: var(--muted);
+            font: 14px/1.55 var(--mono);
+            letter-spacing: .08em;
+        }
+        .title-slide .team strong { display: block; color: var(--ink); font-weight: 500; }
+        .orbit {
+            position: absolute;
+            right: 186px;
+            top: 176px;
+            width: 570px;
+            height: 570px;
+            border: 2px solid rgba(17,27,34,.22);
+            border-radius: 50%;
+            transform: rotate(16deg);
+        }
+        .orbit::before, .orbit::after {
+            content: "";
+            position: absolute;
+            inset: 72px 8px;
+            border: 2px solid rgba(0,168,199,.45);
+            border-radius: 50%;
+            transform: rotate(58deg);
+        }
+        .orbit::after { inset: 8px 72px; border-color: rgba(241,90,69,.42); transform: rotate(-38deg); }
+        .orbit-core {
+            position: absolute;
+            right: 406px;
+            top: 416px;
+            width: 114px;
+            height: 114px;
+            z-index: 3;
+            border-radius: 50% 48% 55% 44%;
+            background: linear-gradient(140deg, var(--signal), #14798a);
+            box-shadow: 0 0 0 18px rgba(0,168,199,.1), 0 0 84px rgba(0,168,199,.38);
+            animation: core-pulse 4.5s ease-in-out infinite;
+        }
+
+        /* === SLIDE 2: PROBLEM === */
+        .problem-slide .statement {
+            position: absolute;
+            left: 156px;
+            top: 248px;
+            width: 1220px;
+            margin: 0;
+            z-index: 3;
+            font: 400 92px/.94 var(--display);
+            letter-spacing: -.04em;
+        }
+        .problem-slide .statement em { color: var(--hot); }
+        .problem-slide .explain {
+            position: absolute;
+            left: 160px;
+            top: 588px;
+            width: 620px;
+            z-index: 3;
+            color: var(--muted);
+            font-size: 24px;
+            line-height: 1.5;
+        }
+        .contrast {
+            position: absolute;
+            right: 154px;
+            top: 262px;
+            width: 456px;
+            z-index: 3;
+        }
+        .contrast .row {
+            display: flex;
+            align-items: center;
+            gap: 22px;
+            min-height: 118px;
+            padding: 22px 24px;
+            border: 3px solid var(--ink);
+            background: rgba(255,255,255,.27);
+        }
+        .contrast .row + .row { margin-top: 28px; border-color: var(--hot); background: var(--hot-soft); }
+        .contrast .mark { width: 42px; height: 42px; flex: 0 0 42px; border: 4px solid var(--ink); border-radius: 50%; }
+        .contrast .row + .row .mark { border-radius: 0; border-color: var(--hot); transform: rotate(45deg); }
+        .contrast b { display: block; font-size: 23px; line-height: 1.08; }
+        .contrast span { display: block; margin-top: 8px; color: var(--muted); font: 14px/1.25 var(--mono); }
+        .problem-slide .callout {
+            position: absolute;
+            right: 154px;
+            bottom: 92px;
+            color: var(--ink-soft);
+            font: 14px/1.5 var(--mono);
+            letter-spacing: .04em;
+        }
+
+        /* === SLIDE 3: PRODUCT IDEA === */
+        .idea-slide .headline {
+            position: absolute;
+            left: 156px;
+            top: 210px;
+            width: 760px;
+            z-index: 3;
+            margin: 0;
+            font: 400 86px/.94 var(--display);
+            letter-spacing: -.04em;
+        }
+        .idea-slide .headline em { color: var(--signal); }
+        .idea-slide .body {
+            position: absolute;
+            left: 160px;
+            top: 540px;
+            width: 560px;
+            z-index: 3;
+            color: var(--muted);
+            font-size: 23px;
+            line-height: 1.52;
+        }
+        .mode-list {
+            position: absolute;
+            left: 160px;
+            bottom: 100px;
+            z-index: 3;
+            display: flex;
+            gap: 12px;
+        }
+        .mode-list span {
+            padding: 11px 15px;
+            border: 2px solid var(--line);
+            color: var(--ink-soft);
+            font: 13px var(--mono);
+            letter-spacing: .08em;
+            text-transform: uppercase;
+        }
+        .compile-map {
+            position: absolute;
+            right: 152px;
+            top: 188px;
+            width: 700px;
+            height: 660px;
+            z-index: 3;
+        }
+        .compile-map .box {
+            position: absolute;
+            width: 270px;
+            min-height: 144px;
+            padding: 28px 28px 24px;
+            border: 3px solid var(--ink);
+            background: rgba(255,255,255,.34);
+            box-shadow: 12px 12px 0 rgba(17,27,34,.08);
+        }
+        .compile-map .box:nth-child(1) { left: 0; top: 0; }
+        .compile-map .box:nth-child(2) { right: 0; top: 184px; border-color: var(--signal); }
+        .compile-map .box:nth-child(3) { left: 0; bottom: 0; border-color: var(--hot); }
+        .compile-map .box:nth-child(4) { right: 0; bottom: 0; color: var(--paper); background: var(--ink); }
+        .compile-map .box b { display: block; font-size: 20px; }
+        .compile-map .box small { display: block; margin-top: 14px; color: var(--muted); font: 14px/1.3 var(--mono); }
+        .compile-map .box:nth-child(4) small { color: #a9c1cb; }
+        .compile-map .join {
+            position: absolute;
+            height: 3px;
+            width: 190px;
+            background: var(--ink);
+            transform-origin: left center;
+        }
+        .compile-map .join.one { left: 218px; top: 150px; transform: rotate(18deg); }
+        .compile-map .join.two { left: 220px; top: 316px; transform: rotate(-18deg); }
+        .compile-map .join.three { left: 218px; top: 478px; transform: rotate(18deg); }
+        .compile-map .dot { position: absolute; width: 16px; height: 16px; border-radius: 50%; background: var(--signal); box-shadow: 0 0 0 8px var(--signal-soft); }
+        .compile-map .dot.one { left: 210px; top: 146px; }
+        .compile-map .dot.two { left: 402px; top: 312px; background: var(--hot); box-shadow: 0 0 0 8px var(--hot-soft); }
+        .compile-map .dot.three { left: 210px; top: 474px; }
+
+        /* === SLIDE 4: PIPELINE === */
+        .pipeline-slide .headline {
+            position: absolute;
+            left: 156px;
+            top: 188px;
+            z-index: 3;
+            margin: 0;
+            font: 400 78px/.95 var(--display);
+            letter-spacing: -.04em;
+        }
+        .pipeline-slide .headline em { color: var(--signal); }
+        .pipeline-slide .intro {
+            position: absolute;
+            left: 160px;
+            top: 390px;
+            width: 450px;
+            z-index: 3;
+            color: var(--muted);
+            font-size: 21px;
+            line-height: 1.5;
+        }
+        .pipeline {
+            position: absolute;
+            left: 700px;
+            right: 154px;
+            top: 220px;
+            bottom: 178px;
+            z-index: 3;
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            grid-template-rows: repeat(2, 1fr);
+            gap: 18px;
+        }
+        .pipeline .stage-card {
+            position: relative;
+            padding: 28px 26px;
+            border: 3px solid var(--ink);
+            background: rgba(255,255,255,.25);
+        }
+        .pipeline .stage-card:nth-child(2), .pipeline .stage-card:nth-child(5) { border-color: var(--signal); }
+        .pipeline .stage-card:nth-child(3), .pipeline .stage-card:nth-child(6) { border-color: var(--hot); }
+        .stage-card .num { color: var(--muted); font: 14px var(--mono); }
+        .stage-card b { display: block; margin-top: 32px; font-size: 25px; line-height: 1.08; }
+        .stage-card span { display: block; margin-top: 12px; color: var(--muted); font: 14px/1.35 var(--mono); }
+        .stage-card .arrow { position: absolute; right: 24px; bottom: 20px; color: var(--signal); font-size: 30px; }
+
+        /* === SLIDE 5: PROOF VIEW === */
+        .proof-slide .headline {
+            position: absolute;
+            left: 156px;
+            top: 182px;
+            width: 600px;
+            z-index: 3;
+            margin: 0;
+            font: 400 78px/.94 var(--display);
+            letter-spacing: -.04em;
+        }
+        .proof-slide .headline em { color: var(--hot); }
+        .proof-slide .aside {
+            position: absolute;
+            left: 160px;
+            top: 470px;
+            width: 410px;
+            z-index: 3;
+            color: var(--muted);
+            font-size: 20px;
+            line-height: 1.48;
+        }
+        .proof-panel {
+            position: absolute;
+            right: 150px;
+            top: 148px;
+            width: 940px;
+            height: 760px;
+            z-index: 3;
+            padding: 34px 38px;
+            border: 3px solid var(--ink);
+            background: rgba(255,255,255,.42);
+            box-shadow: 18px 18px 0 rgba(17,27,34,.11);
+        }
+        .proof-panel .panel-top { display: flex; align-items: center; justify-content: space-between; padding-bottom: 24px; border-bottom: 2px solid var(--line); }
+        .proof-panel .panel-top strong { font-size: 19px; }
+        .build-badge { padding: 9px 14px; border: 2px solid var(--fail); color: var(--fail); font: 13px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+        .claim { margin-top: 26px; padding: 22px 24px; border-left: 7px solid var(--pass); background: rgba(25,139,112,.09); }
+        .claim .claim-label { color: var(--pass); font: 13px var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+        .claim p { margin: 14px 0 0; font: 500 27px/1.17 var(--body); }
+        .metrics { display: grid; grid-template-columns: 1.1fr 1fr 1fr; gap: 14px; margin-top: 22px; }
+        .metric { padding: 17px 18px; border: 2px solid var(--line); background: rgba(255,255,255,.3); }
+        .metric b { display: block; font: 500 31px var(--mono); }
+        .metric span { display: block; margin-top: 8px; color: var(--muted); font-size: 13px; }
+        .sources { margin-top: 22px; }
+        .sources-head { display: flex; justify-content: space-between; color: var(--muted); font: 13px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+        .source-row { display: flex; align-items: center; gap: 12px; margin-top: 12px; padding: 13px 15px; border: 2px solid var(--line); background: rgba(255,255,255,.24); font-size: 15px; }
+        .source-row .stance { width: 11px; height: 11px; border-radius: 50%; background: var(--pass); }
+        .source-row.challenge .stance { background: var(--hot); }
+        .source-row small { margin-left: auto; color: var(--muted); font: 12px var(--mono); }
+
+        /* === SLIDE 6: DIFFERENTIATORS === */
+        .why-slide .headline {
+            position: absolute;
+            left: 156px;
+            top: 192px;
+            width: 670px;
+            z-index: 3;
+            margin: 0;
+            font: 400 84px/.92 var(--display);
+            letter-spacing: -.04em;
+        }
+        .why-slide .headline em { color: var(--signal); }
+        .why-slide .sub {
+            position: absolute;
+            left: 160px;
+            top: 528px;
+            width: 490px;
+            z-index: 3;
+            color: var(--muted);
+            font-size: 20px;
+            line-height: 1.5;
+        }
+        .principles {
+            position: absolute;
+            right: 150px;
+            top: 188px;
+            width: 800px;
+            z-index: 3;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 18px;
+        }
+        .principle { min-height: 220px; padding: 26px 26px 22px; border: 3px solid var(--ink); background: rgba(255,255,255,.25); }
+        .principle:nth-child(2) { border-color: var(--signal); }
+        .principle:nth-child(3) { border-color: var(--hot); }
+        .principle:nth-child(4) { color: var(--paper); background: var(--ink); }
+        .principle .icon { color: var(--signal); font: 28px var(--mono); }
+        .principle:nth-child(3) .icon { color: var(--hot); }
+        .principle:nth-child(4) .icon { color: #a9c1cb; }
+        .principle b { display: block; margin-top: 32px; font-size: 23px; line-height: 1.1; }
+        .principle span { display: block; margin-top: 12px; color: var(--muted); font-size: 15px; line-height: 1.38; }
+        .principle:nth-child(4) span { color: #a9c1cb; }
+        .why-slide .note { position: absolute; left: 160px; bottom: 96px; color: var(--ink-soft); font: 14px var(--mono); letter-spacing: .05em; }
+
+        /* === SLIDE 7: CLOSE === */
+        .close-slide { background: var(--ink); color: var(--paper); }
+        .close-slide::after { background: radial-gradient(circle at 70% 38%, rgba(0,168,199,.24), transparent 28%), radial-gradient(circle at 20% 78%, rgba(241,90,69,.18), transparent 24%); }
+        .close-slide .eyebrow, .close-slide .page-no { color: #8dd9e5; }
+        .close-slide .rail { background: var(--paper); }
+        .close-slide .rail::before, .close-slide .rail::after { background: var(--ink); }
+        .close-slide .headline {
+            position: absolute;
+            left: 156px;
+            top: 262px;
+            width: 1200px;
+            z-index: 3;
+            margin: 0;
+            font: 400 112px/.88 var(--display);
+            letter-spacing: -.045em;
+        }
+        .close-slide .headline em { color: var(--signal); }
+        .close-slide .descriptor { position: absolute; left: 160px; top: 648px; z-index: 3; color: #a9c1cb; font-size: 22px; line-height: 1.45; }
+        .close-slide .team { position: absolute; left: 160px; bottom: 98px; z-index: 3; color: #a9c1cb; font: 15px/1.6 var(--mono); letter-spacing: .09em; }
+        .close-slide .team strong { display: block; color: var(--paper); font-weight: 500; }
+        .close-slide .seal { position: absolute; right: 216px; top: 254px; z-index: 3; width: 350px; height: 350px; border: 2px solid rgba(233,237,240,.36); border-radius: 50%; display: grid; place-items: center; text-align: center; color: var(--signal); font: 14px/1.65 var(--mono); letter-spacing: .16em; text-transform: uppercase; transform: rotate(-12deg); }
+        .close-slide .seal::before, .close-slide .seal::after { content: ""; position: absolute; inset: 34px; border: 2px solid rgba(0,168,199,.55); border-radius: 50%; }
+        .close-slide .seal::after { inset: 94px; border-color: rgba(241,90,69,.72); }
+        .close-slide .seal b { position: relative; z-index: 2; font-weight: 500; }
+
+        /* === CONTROLS AND INLINE EDITING === */
+        .deck-controls { display: flex; align-items: center; gap: 14px; padding: 9px 13px; border: 1px solid rgba(233,237,240,.18); border-radius: 99px; background: rgba(17,27,34,.84); color: #d8e1e5; backdrop-filter: blur(12px); }
+        .deck-controls button { border: 0; background: transparent; color: inherit; cursor: pointer; font: 12px var(--mono); letter-spacing: .08em; }
+        .deck-controls button:hover { color: var(--signal); }
+        .progress { width: 110px; height: 3px; overflow: hidden; background: rgba(233,237,240,.22); }
+        .progress i { display: block; width: 14.28%; height: 100%; background: var(--signal); transition: width .4s var(--ease); }
+        .edit-hotzone { position: fixed; left: 0; top: 0; width: 90px; height: 90px; z-index: 10000; }
+        .edit-toggle { position: fixed; left: 18px; top: 18px; z-index: 10001; padding: 9px 12px; border: 1px solid rgba(233,237,240,.22); border-radius: 6px; background: rgba(17,27,34,.9); color: #d8e1e5; opacity: 0; pointer-events: none; cursor: pointer; font: 12px var(--mono); letter-spacing: .08em; transition: opacity .25s ease; }
+        .edit-toggle.show, .edit-toggle.active { opacity: 1; pointer-events: auto; }
+        .edit-hint { position: fixed; left: 18px; top: 60px; z-index: 10001; color: #d8e1e5; opacity: 0; font: 11px var(--mono); transition: opacity .25s ease; }
+        .edit-hint.show { opacity: 1; }
+        body.editing [data-editable] { outline: 2px dashed var(--signal); outline-offset: 6px; cursor: text; }
+        body.editing .edit-hint { opacity: 1; }
+        body.editing .deck-controls { opacity: .2; }
+
+        /* === MOTION === */
+        @keyframes core-pulse { 50% { transform: scale(1.08); box-shadow: 0 0 0 18px rgba(0,168,199,.08), 0 0 108px rgba(0,168,199,.5); } }
+        @keyframes orbit-turn { to { transform: rotate(376deg); } }
+        .title-slide .orbit { animation: orbit-turn 28s linear infinite; }
+        @media (prefers-reduced-motion: reduce) { .title-slide .orbit, .orbit-core { animation: none; } }
+    </style>
+</head>
+<body>
+    <div class="deck-viewport">
+        <main class="deck-stage" id="deckStage">
+            <!-- === SLIDE 1: TITLE === -->
+            <section class="slide title-slide active visible" aria-label="Title slide">
+                <div class="rail"></div><div class="eyebrow" data-editable>VERITYGRAPH / RESEARCH SYSTEM</div><div class="page-no">01 / 07</div>
+                <div class="title-kicker reveal" data-editable>proof-carrying research</div>
+                <h1 class="reveal" data-editable>Every claim<br>must earn its <em>evidence.</em></h1>
+                <p class="subtitle reveal" data-editable>A calm, auditable way to see what is supported, what is uncertain, and what would change the verdict.</p>
+                <div class="team reveal" data-editable><strong>DREAM TEAM</strong>DINESH KUMAR SIVARAM · ESHAA SUMESH</div>
+                <div class="orbit" aria-hidden="true"></div><div class="orbit-core" aria-hidden="true"></div>
+            </section>
+
+            <!-- === SLIDE 2: PROBLEM === -->
+            <section class="slide problem-slide" aria-label="The problem">
+                <div class="rail"></div><div class="eyebrow">VERITYGRAPH / THE PROBLEM</div><div class="page-no">02 / 07</div>
+                <div class="rule" style="left:156px;top:182px"></div>
+                <p class="statement reveal" data-editable>Fluent answers make<br>every claim sound <em>equal.</em></p>
+                <p class="explain reveal" data-editable>But a researcher still has to separate support from contradiction, confidence from certainty, and a real source from a repeated snippet.</p>
+                <div class="contrast reveal" aria-label="Contrast between fluency and evidence">
+                    <div class="row"><div class="mark"></div><div><b>Sounds right</b><span>fluency / confidence / speed</span></div></div>
+                    <div class="row"><div class="mark"></div><div><b>Holds up</b><span>support / challenge / origin</span></div></div>
+                </div>
+                <div class="callout" data-editable>the gap is not more prose.<br>the gap is a visible proof trail.</div>
+            </section>
+
+            <!-- === SLIDE 3: CORE IDEA === -->
+            <section class="slide idea-slide" aria-label="Core product idea">
+                <div class="rail"></div><div class="eyebrow">VERITYGRAPH / THE IDEA</div><div class="page-no">03 / 07</div>
+                <h2 class="headline reveal" data-editable>Compile a question<br>into an <em>evidence record.</em></h2>
+                <p class="body reveal" data-editable>VerityGraph extracts atomic claims, searches for support and challenge, verifies against supplied evidence, then synthesizes a report without inventing new facts.</p>
+                <div class="mode-list reveal"><span>research mode</span><span>audit mode</span><span>demo mode</span></div>
+                <div class="compile-map reveal" aria-label="Question to proof map">
+                    <div class="box"><b>Ask</b><small>query / pasted answer</small></div><div class="box"><b>Find</b><small>support + challenge</small></div><div class="box"><b>Verify</b><small>verdict / confidence</small></div><div class="box"><b>Export</b><small>markdown + JSON proof</small></div>
+                    <div class="join one"></div><div class="join two"></div><div class="join three"></div><div class="dot one"></div><div class="dot two"></div><div class="dot three"></div>
+                </div>
+            </section>
+
+            <!-- === SLIDE 4: PIPELINE === -->
+            <section class="slide pipeline-slide" aria-label="Six-stage verification pipeline">
+                <div class="rail"></div><div class="eyebrow">VERITYGRAPH / THE PIPELINE</div><div class="page-no">04 / 07</div>
+                <h2 class="headline reveal" data-editable>Six stages.<br><em>One trace.</em></h2>
+                <p class="intro reveal" data-editable>Each stage narrows uncertainty. Search finds context. Extraction grounds the source. Verification only sees the evidence we supplied.</p>
+                <div class="pipeline reveal">
+                    <div class="stage-card"><div class="num">01</div><b>Initial search</b><span>Tavily Advanced Search</span><div class="arrow">↘</div></div>
+                    <div class="stage-card"><div class="num">02</div><b>Claim extraction</b><span>atomic, check-worthy claims</span><div class="arrow">↘</div></div>
+                    <div class="stage-card"><div class="num">03</div><b>Evidence search</b><span>support + challenge candidates</span><div class="arrow">↙</div></div>
+                    <div class="stage-card"><div class="num">04</div><b>Focused extraction</b><span>up to four URLs per claim</span><div class="arrow">↗</div></div>
+                    <div class="stage-card"><div class="num">05</div><b>Claim verification</b><span>stance, confidence, next query</span><div class="arrow">↗</div></div>
+                    <div class="stage-card"><div class="num">06</div><b>Report synthesis</b><span>concise proof-carrying report</span><div class="arrow">→</div></div>
+                </div>
+            </section>
+
+            <!-- === SLIDE 5: PROOF VIEW === -->
+            <section class="slide proof-slide" aria-label="Proof view">
+                <div class="rail"></div><div class="eyebrow">VERITYGRAPH / THE PROOF VIEW</div><div class="page-no">05 / 07</div>
+                <h2 class="headline reveal" data-editable>Verdicts<br>with the <em>why</em> attached.</h2>
+                <p class="aside reveal" data-editable>Not just a green badge. Every claim carries confidence factors, source independence, missing evidence, and the next-best search.</p>
+                <div class="proof-panel reveal">
+                    <div class="panel-top"><strong data-editable>Claim 01 / creatine and memory</strong><div class="build-badge">build warning</div></div>
+                    <div class="claim"><div class="claim-label">supported · 94% confidence</div><p data-editable>Moderate daily creatine intake (3–5g) is associated with improved memory retention in select aging populations.</p></div>
+                    <div class="metrics"><div class="metric"><b>18</b><span>sources scanned</span></div><div class="metric"><b>12</b><span>distinct domains</span></div><div class="metric"><b>2 / 4</b><span>independent origins</span></div></div>
+                    <div class="sources"><div class="sources-head"><span>evidence trail</span><span>stance / origin</span></div><div class="source-row"><i class="stance"></i><b>Systematic review meta-analysis</b><small>support · origin A</small></div><div class="source-row"><i class="stance"></i><b>Older-adult memory trial</b><small>support · origin B</small></div><div class="source-row challenge"><i class="stance"></i><b>Long-term cohort data</b><small>challenge · missing</small></div></div>
+                </div>
+            </section>
+
+            <!-- === SLIDE 6: DIFFERENTIATORS === -->
+            <section class="slide why-slide" aria-label="Why VerityGraph holds up">
+                <div class="rail"></div><div class="eyebrow">VERITYGRAPH / WHY IT HOLDS</div><div class="page-no">06 / 07</div>
+                <h2 class="headline reveal" data-editable>Trust is a<br><em>structure.</em></h2>
+                <p class="sub reveal" data-editable>VerityGraph makes the uncomfortable parts visible instead of smoothing them over.</p>
+                <div class="principles reveal">
+                    <div class="principle"><div class="icon">01</div><b>Uncertainty stays visible</b><span>Warnings and failures are first-class outcomes, not hidden edge cases.</span></div>
+                    <div class="principle"><div class="icon">02</div><b>Evidence stays close</b><span>Support and challenge sit beside the claim they qualify.</span></div>
+                    <div class="principle"><div class="icon">03</div><b>Origins are grouped</b><span>Duplicate sources remain visible while related domains are traced.</span></div>
+                    <div class="principle"><div class="icon">04</div><b>Proof can leave the room</b><span>Export the run as markdown or JSON for review and reuse.</span></div>
+                </div>
+                <div class="note reveal" data-editable>pass / warning / fail · deterministic build status</div>
+            </section>
+
+            <!-- === SLIDE 7: CLOSE === -->
+            <section class="slide close-slide" aria-label="Closing slide">
+                <div class="rail"></div><div class="eyebrow" data-editable>VERITYGRAPH / DREAM TEAM</div><div class="page-no">07 / 07</div>
+                <h2 class="headline reveal" data-editable>Trust is not a tone.<br>It is a <em>trace.</em></h2>
+                <p class="descriptor reveal" data-editable>Every claim must earn its evidence.</p>
+                <div class="team reveal" data-editable><strong>DINESH KUMAR SIVARAM · TEAM LEADER</strong>ESHAA SUMESH · TEAM MEMBER 1</div>
+                <div class="seal reveal" aria-hidden="true"><b>claim<br>→ evidence<br>→ verdict</b></div>
+            </section>
+        </main>
+    </div>
+
+    <!-- === PRESENTATION CONTROLS === -->
+    <div class="deck-controls" aria-label="Presentation controls">
+        <button type="button" id="prevBtn" aria-label="Previous slide">←</button>
+        <div class="progress" aria-hidden="true"><i id="progressBar"></i></div>
+        <span id="slideCounter" aria-live="polite">01 / 07</span>
+        <button type="button" id="nextBtn" aria-label="Next slide">→</button>
+    </div>
+    <div class="edit-hotzone" id="editHotzone" aria-hidden="true"></div>
+    <button class="edit-toggle" id="editToggle" type="button" title="Edit mode (E)">EDIT</button>
+    <div class="edit-hint" id="editHint">Click any outlined text · Ctrl+S saves locally · E exits</div>
+
+    <script>
+        /* === SLIDE PRESENTATION CONTROLLER === */
+        class SlidePresentation {
+            constructor() {
+                this.slides = [...document.querySelectorAll('.slide')];
+                this.currentSlide = 0;
+                this.stage = document.getElementById('deckStage');
+                this.counter = document.getElementById('slideCounter');
+                this.progress = document.getElementById('progressBar');
+                this.wheelLock = false;
+                this.touchStartX = 0;
+                this.touchStartY = 0;
+                this.setupStageScale();
+                this.setupKeyboardNav();
+                this.setupTouchNav();
+                this.setupWheelNav();
+                document.getElementById('prevBtn').addEventListener('click', () => this.showSlide(this.currentSlide - 1));
+                document.getElementById('nextBtn').addEventListener('click', () => this.showSlide(this.currentSlide + 1));
+                this.restoreEdits();
+                this.showSlide(0);
+            }
+
+            setupStageScale() {
+                const scale = () => {
+                    const factor = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
+                    const x = (window.innerWidth - 1920 * factor) / 2;
+                    const y = (window.innerHeight - 1080 * factor) / 2;
+                    this.stage.style.transform = `translate(${x}px, ${y}px) scale(${factor})`;
+                };
+                scale();
+                window.addEventListener('resize', scale);
+            }
+
+            setupKeyboardNav() {
+                document.addEventListener('keydown', (event) => {
+                    if (event.target && event.target.isContentEditable) {
+                        if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
+                            event.preventDefault();
+                            this.saveEdits();
+                        }
+                        return;
+                    }
+                    if (event.key === 'ArrowRight' || event.key === 'ArrowDown' || event.key === ' ' || event.key === 'PageDown') {
+                        event.preventDefault();
+                        this.showSlide(this.currentSlide + 1);
+                    }
+                    if (event.key === 'ArrowLeft' || event.key === 'ArrowUp' || event.key === 'PageUp') {
+                        event.preventDefault();
+                        this.showSlide(this.currentSlide - 1);
+                    }
+                    if (event.key === 'Home') this.showSlide(0);
+                    if (event.key === 'End') this.showSlide(this.slides.length - 1);
+                    if ((event.key === 'e' || event.key === 'E') && !event.target.closest('[contenteditable="true"]')) toggleEditMode();
+                });
+            }
+
+            setupTouchNav() {
+                document.addEventListener('touchstart', (event) => {
+                    this.touchStartX = event.changedTouches[0].screenX;
+                    this.touchStartY = event.changedTouches[0].screenY;
+                }, { passive: true });
+                document.addEventListener('touchend', (event) => {
+                    const dx = event.changedTouches[0].screenX - this.touchStartX;
+                    const dy = event.changedTouches[0].screenY - this.touchStartY;
+                    if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy)) this.showSlide(this.currentSlide + (dx < 0 ? 1 : -1));
+                }, { passive: true });
+            }
+
+            setupWheelNav() {
+                document.addEventListener('wheel', (event) => {
+                    if (this.wheelLock || Math.abs(event.deltaY) < 18) return;
+                    this.wheelLock = true;
+                    this.showSlide(this.currentSlide + (event.deltaY > 0 ? 1 : -1));
+                    window.setTimeout(() => { this.wheelLock = false; }, 520);
+                }, { passive: true });
+            }
+
+            showSlide(index) {
+                this.currentSlide = Math.max(0, Math.min(index, this.slides.length - 1));
+                this.slides.forEach((slide, i) => {
+                    slide.classList.toggle('active', i === this.currentSlide);
+                    slide.classList.toggle('visible', i === this.currentSlide);
+                });
+                const page = String(this.currentSlide + 1).padStart(2, '0');
+                this.counter.textContent = `${page} / ${String(this.slides.length).padStart(2, '0')}`;
+                this.progress.style.width = `${((this.currentSlide + 1) / this.slides.length) * 100}%`;
+            }
+
+            saveEdits() {
+                const values = [...document.querySelectorAll('[data-editable]')].map((node) => node.innerHTML);
+                localStorage.setItem('veritygraph-presentation-edits', JSON.stringify(values));
+                document.getElementById('editHint').textContent = 'Saved locally · Ctrl+S saves again · E exits';
+            }
+
+            restoreEdits() {
+                try {
+                    const values = JSON.parse(localStorage.getItem('veritygraph-presentation-edits') || 'null');
+                    if (Array.isArray(values)) document.querySelectorAll('[data-editable]').forEach((node, i) => { if (values[i]) node.innerHTML = values[i]; });
+                } catch (_) { /* Ignore malformed local edits and keep the authored deck. */ }
+            }
+        }
+
+        /* === INLINE EDITOR === */
+        let editorActive = false;
+        function toggleEditMode() {
+            editorActive = !editorActive;
+            document.body.classList.toggle('editing', editorActive);
+            document.getElementById('editToggle').classList.toggle('active', editorActive);
+            document.getElementById('editHint').classList.toggle('show', editorActive);
+            document.querySelectorAll('[data-editable]').forEach((node) => {
+                node.contentEditable = String(editorActive);
+                node.spellcheck = editorActive;
+            });
+        }
+        const hotzone = document.getElementById('editHotzone');
+        const editToggle = document.getElementById('editToggle');
+        let hideTimeout = null;
+        hotzone.addEventListener('mouseenter', () => { clearTimeout(hideTimeout); editToggle.classList.add('show'); });
+        hotzone.addEventListener('mouseleave', () => { hideTimeout = setTimeout(() => { if (!editorActive) editToggle.classList.remove('show'); }, 400); });
+        editToggle.addEventListener('mouseenter', () => clearTimeout(hideTimeout));
+        editToggle.addEventListener('mouseleave', () => { hideTimeout = setTimeout(() => { if (!editorActive) editToggle.classList.remove('show'); }, 400); });
+        hotzone.addEventListener('click', toggleEditMode);
+        editToggle.addEventListener('click', toggleEditMode);
+
+        /* === BOOT === */
+        window.presentation = new SlidePresentation();
+    </script>
+</body>
+</html>

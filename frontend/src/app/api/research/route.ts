@@ -7,104 +7,48 @@ export const runtime = 'nodejs';
 export const maxDuration = 60;
 export const dynamic = 'force-dynamic';
 
-const NO_CACHE_HEADERS = {
-  'Cache-Control': 'no-store',
-};
+const NO_CACHE_HEADERS = { 'Cache-Control': 'no-store' };
 
-const requestSchema = z.object({
-  mode: z.enum(['research', 'audit']).optional().default('research'),
-  query: z.string().optional(),
-  text: z.string().optional(),
-});
+const requestSchema = z.union([
+  z
+    .object({ query: z.string().trim().min(10).max(500) })
+    .strict()
+    .transform((value) => ({ mode: 'research' as const, query: value.query.trim() })),
+  z
+    .object({ mode: z.literal('research'), query: z.string().trim().min(10).max(500) })
+    .strict()
+    .transform((value) => ({ mode: 'research' as const, query: value.query.trim() })),
+  z
+    .object({ mode: z.literal('audit'), text: z.string().trim().min(100).max(6000) })
+    .strict()
+    .transform((value) => ({ mode: 'audit' as const, text: value.text.trim() })),
+]);
 
 export async function POST(req: Request) {
+  let body: unknown;
   try {
-    let body: unknown;
-    try {
-      body = await req.json();
-    } catch {
-      return NextResponse.json(
-        { error: 'Invalid JSON payload in request body.', stage: 'initial-search' },
-        { status: 400, headers: NO_CACHE_HEADERS }
-      );
-    }
+    body = await req.json();
+  } catch {
+    return NextResponse.json(
+      { error: 'Invalid JSON payload in request body.', stage: 'initial-search' },
+      { status: 400, headers: NO_CACHE_HEADERS }
+    );
+  }
 
-    const parsed = requestSchema.safeParse(body);
+  const parsed = requestSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: 'Invalid research or audit request.', stage: 'initial-search' },
+      { status: 400, headers: NO_CACHE_HEADERS }
+    );
+  }
 
-    if (!parsed.success) {
-      const errorMessage =
-        parsed.error.issues[0]?.message || 'Invalid request parameters.';
-      return NextResponse.json(
-        { error: errorMessage, stage: 'initial-search' },
-        { status: 400, headers: NO_CACHE_HEADERS }
-      );
-    }
-
-    const mode = parsed.data.mode;
-    const inputText = (parsed.data.text || parsed.data.query || '').trim();
-
-    if (mode === 'audit') {
-      if (!inputText) {
-        return NextResponse.json(
-          { error: 'AI answer text is required for Audit Mode.', stage: 'claim-extraction' },
-          { status: 400, headers: NO_CACHE_HEADERS }
-        );
-      }
-      if (inputText.length < 100) {
-        return NextResponse.json(
-          {
-            error: 'AI answer text must be at least 100 characters long.',
-            stage: 'claim-extraction',
-          },
-          { status: 400, headers: NO_CACHE_HEADERS }
-        );
-      }
-      if (inputText.length > 6000) {
-        return NextResponse.json(
-          {
-            error: 'AI answer text must be at most 6,000 characters long.',
-            stage: 'claim-extraction',
-          },
-          { status: 400, headers: NO_CACHE_HEADERS }
-        );
-      }
-    } else {
-      if (!inputText) {
-        return NextResponse.json(
-          { error: 'Research query is required.', stage: 'initial-search' },
-          { status: 400, headers: NO_CACHE_HEADERS }
-        );
-      }
-      if (inputText.length < 10) {
-        return NextResponse.json(
-          {
-            error: 'Research query must be at least 10 characters long.',
-            stage: 'initial-search',
-          },
-          { status: 400, headers: NO_CACHE_HEADERS }
-        );
-      }
-      if (inputText.length > 500) {
-        return NextResponse.json(
-          {
-            error: 'Research query must be at most 500 characters long.',
-            stage: 'initial-search',
-          },
-          { status: 400, headers: NO_CACHE_HEADERS }
-        );
-      }
-    }
-
-    const { run, usedFallback } = await runResearchPipeline({
-      mode,
-      query: mode === 'research' ? inputText : undefined,
-      text: mode === 'audit' ? inputText : undefined,
-    });
-
+  try {
+    const { run, usedFallback } = await runResearchPipeline(parsed.data);
     return NextResponse.json(run, {
       status: 200,
       headers: {
-        'Cache-Control': 'no-store',
+        ...NO_CACHE_HEADERS,
         'X-Gemini-Fallback-Used': usedFallback ? 'true' : 'false',
       },
     });
@@ -115,12 +59,8 @@ export async function POST(req: Request) {
         { status: 500, headers: NO_CACHE_HEADERS }
       );
     }
-
     return NextResponse.json(
-      {
-        error: 'An unexpected pipeline error occurred during verification.',
-        stage: 'initial-search',
-      },
+      { error: 'An unexpected pipeline error occurred during verification.', stage: 'initial-search' },
       { status: 500, headers: NO_CACHE_HEADERS }
     );
   }

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { EvidenceBasis, PipelineError } from './types';
+import { canonicalizeUrl, normalizeDomain } from './verificationRules';
 
 const FETCH_TIMEOUT_MS = 15000;
 
@@ -51,25 +52,6 @@ export async function fetchWithTimeout(
     return res;
   } finally {
     clearTimeout(timeoutId);
-  }
-}
-
-function normalizeUrl(url: string): string {
-  try {
-    const parsed = new URL(url);
-    parsed.hash = '';
-    return parsed.toString().replace(/\/$/, '').toLowerCase();
-  } catch {
-    return url.trim().toLowerCase();
-  }
-}
-
-function extractDomain(url: string): string {
-  try {
-    const parsed = new URL(url);
-    return parsed.hostname.replace(/^www\./, '');
-  } catch {
-    return 'external';
   }
 }
 
@@ -132,7 +114,7 @@ export async function searchInitialSources(
 
   let count = 1;
   for (const item of rawList) {
-    const canonical = normalizeUrl(item.url);
+    const canonical = canonicalizeUrl(item.url);
     if (seen.has(canonical)) continue;
     seen.add(canonical);
 
@@ -140,7 +122,7 @@ export async function searchInitialSources(
       id: `src-${count++}`,
       title: item.title,
       url: item.url,
-      domain: extractDomain(item.url),
+      domain: normalizeDomain(item.url),
       excerpt: item.content || item.title,
     });
   }
@@ -152,16 +134,17 @@ export async function searchInitialSources(
  * Stage 3: Evidence Search for a single claim
  */
 export async function searchClaimEvidence(
-  supportQuery: string,
+  supportQueries: string | string[],
   challengeQuery: string,
   apiKey: string,
   claimIndex: number
 ): Promise<CandidateEvidence[]> {
   const fetchQuery = async (
-    q: string,
-    candidateType: 'support-candidate' | 'challenge-candidate'
+    query: string,
+    candidateType: 'support-candidate' | 'challenge-candidate',
+    queryIndex: number
   ): Promise<CandidateEvidence[]> => {
-    if (!q.trim()) return [];
+    if (!query.trim()) return [];
 
     let res: Response;
     try {
@@ -170,7 +153,7 @@ export async function searchClaimEvidence(
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           api_key: apiKey,
-          query: q,
+          query,
           search_depth: 'basic',
           max_results: 3,
           include_answer: false,
@@ -187,7 +170,7 @@ export async function searchClaimEvidence(
     if (!res.ok) {
       throw new PipelineError(
         'evidence-search',
-        `Search provider returned error (${res.status}) while retrieving evidence for claim ${claimIndex}.`
+        `Search provider returned an error while retrieving evidence for claim ${claimIndex}.`
       );
     }
 
@@ -205,39 +188,35 @@ export async function searchClaimEvidence(
     if (!parsed.success) {
       throw new PipelineError(
         'evidence-search',
-        `Search provider returned malformed evidence schema for claim ${claimIndex}.`
+        `Search provider returned malformed evidence for claim ${claimIndex}.`
       );
     }
 
-    let idx = 1;
+    let resultIndex = 1;
     return parsed.data.results.map((item) => ({
-      id: `c${claimIndex}-ev-${candidateType === 'support-candidate' ? 's' : 'c'}-${idx++}`,
+      id: `c${claimIndex}-ev-${candidateType === 'support-candidate' ? 's' : 'c'}-${queryIndex}-${resultIndex++}`,
       title: item.title,
       url: item.url,
-      domain: extractDomain(item.url),
+      domain: normalizeDomain(item.url),
       excerpt: item.content || item.title,
       candidateType,
-      evidenceBasis: 'search-snippet',
+      evidenceBasis: 'search-snippet' as const,
     }));
   };
 
-  const [supportResults, challengeResults] = await Promise.all([
-    fetchQuery(supportQuery, 'support-candidate'),
-    fetchQuery(challengeQuery, 'challenge-candidate'),
-  ]);
-
-  const combined = [...supportResults, ...challengeResults];
+  const supportList = Array.isArray(supportQueries) ? supportQueries : [supportQueries];
+  const searches = [
+    ...supportList.map((query, index) => fetchQuery(query, 'support-candidate', index + 1)),
+    fetchQuery(challengeQuery, 'challenge-candidate', 1),
+  ];
+  const results = await Promise.all(searches);
   const seen = new Set<string>();
-  const deduplicated: CandidateEvidence[] = [];
-
-  for (const item of combined) {
-    const canonical = normalizeUrl(item.url);
-    if (seen.has(canonical)) continue;
+  return results.flat().filter((item) => {
+    const canonical = canonicalizeUrl(item.url);
+    if (seen.has(canonical)) return false;
     seen.add(canonical);
-    deduplicated.push(item);
-  }
-
-  return deduplicated;
+    return true;
+  });
 }
 
 /**
@@ -333,7 +312,7 @@ export async function extractFocusedEvidence(
           const rawText = item.raw_content || '';
           const normalized = rawText.replace(/\s+/g, ' ').trim();
           if (normalized.length > 0) {
-            extractMap.set(normalizeUrl(item.url), normalized.slice(0, 1500));
+            extractMap.set(canonicalizeUrl(item.url), normalized.slice(0, 1500));
           }
         }
       }
@@ -345,7 +324,7 @@ export async function extractFocusedEvidence(
 
   // Update candidate evidence objects
   return candidates.map((c) => {
-    const canonical = normalizeUrl(c.url);
+    const canonical = canonicalizeUrl(c.url);
     const extracted = extractMap.get(canonical);
 
     if (extracted) {

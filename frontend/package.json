@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "assert:engine": "npx --yes tsx scripts/engine-assertions.ts"
   },
   "dependencies": {
     "@google/genai": "^2.13.0",

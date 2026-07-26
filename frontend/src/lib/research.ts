@@ -1,4 +1,5 @@
 import { getEnv } from './env';
+import { anchorAuditQuotes } from './quoteAnchoring';
 import {
   searchInitialSources,
   searchClaimEvidence,
@@ -9,411 +10,273 @@ import {
   extractClaimsWithGemini,
   verifyClaimWithGemini,
   synthesizeReportWithGemini,
+  ExtractedClaim,
 } from './gemini';
 import {
-  BuildResult,
+  AgentTraceStep,
   Claim,
-  ClaimVerdict,
-  Evidence,
-  EvidenceBasis,
   ResearchApiRequest,
-  ResearchMetrics,
   ResearchRun,
-  SourceIndependence,
-  VerificationBuildStatus,
+  ReverifyRequest,
   WorkflowMode,
 } from './types';
+import {
+  analyzeSourceIndependence,
+  calculateEvidenceMetrics,
+  calculateOverallBuildResult,
+  classifyClaimBuildStatus,
+} from './verificationRules';
+
+export const PIPELINE_VERSION = '2.0';
+export const BUILD_RULES_VERSION = '1.0';
+export const SOURCE_INDEPENDENCE_VERSION = '1.0';
 
 export interface ResearchPipelineResult {
   run: ResearchRun;
   usedFallback: boolean;
 }
 
-const STOPWORDS = new Set([
-  'a',
-  'an',
-  'the',
-  'and',
-  'or',
-  'in',
-  'of',
-  'to',
-  'with',
-  'on',
-  'at',
-  'for',
-  'by',
-  'is',
-  'are',
-  'was',
-  'were',
-  'be',
-  'been',
-  'from',
-  'as',
-  'it',
-  'that',
-  'this',
-  'these',
-  'those',
-  'study',
-  'report',
-  'review',
-  'journal',
-  'article',
-]);
-
-function tokenizeTitle(title: string): Set<string> {
-  const normalized = title
-    .toLowerCase()
-    .replace(/[^\w\s]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  const tokens = normalized
-    .split(' ')
-    .filter((t) => t.length > 2 && !STOPWORDS.has(t));
-
-  return new Set(tokens);
-}
-
-function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
-  if (a.size === 0 && b.size === 0) return 1.0;
-  if (a.size === 0 || b.size === 0) return 0.0;
-  let intersection = 0;
-  for (const t of a) {
-    if (b.has(t)) intersection++;
-  }
-  const union = a.size + b.size - intersection;
-  return union > 0 ? intersection / union : 0;
-}
-
-interface OriginGroup {
-  id: string;
-  domain: string;
-  tokens: Set<string>;
-  members: Evidence[];
-}
-
-/**
- * Deterministic source-independence heuristic algorithm
- */
-function analyzeSourceIndependence(evidenceList: Evidence[]): {
-  evidenceWithGroups: Evidence[];
-  sourceIndependence: SourceIndependence;
-} {
-  const groups: OriginGroup[] = [];
-  const GROUP_NAMES = [
-    'Group A',
-    'Group B',
-    'Group C',
-    'Group D',
-    'Group E',
-    'Group F',
-    'Group G',
-  ];
-
-  const updatedEvidence: Evidence[] = [];
-
-  for (const ev of evidenceList) {
-    const evTokens = tokenizeTitle(ev.title);
-    let matchedGroup: OriginGroup | null = null;
-
-    for (const g of groups) {
-      const sim = jaccardSimilarity(evTokens, g.tokens);
-      // Rule 4: Group two sources when title-token Jaccard similarity is >= 0.72
-      if (sim >= 0.72) {
-        matchedGroup = g;
-        break;
-      }
-      // Rule 5: Sources from same canonical domain belong to same origin group unless title similarity is < 0.20
-      if (ev.domain === g.domain && sim >= 0.20) {
-        matchedGroup = g;
-        break;
-      }
-    }
-
-    if (matchedGroup) {
-      matchedGroup.members.push(ev);
-      for (const t of evTokens) matchedGroup.tokens.add(t);
-      updatedEvidence.push({ ...ev, originGroupId: matchedGroup.id });
-    } else {
-      const newGroupId = GROUP_NAMES[groups.length] || `Group ${groups.length + 1}`;
-      const newGroup: OriginGroup = {
-        id: newGroupId,
-        domain: ev.domain,
-        tokens: evTokens,
-        members: [ev],
-      };
-      groups.push(newGroup);
-      updatedEvidence.push({ ...ev, originGroupId: newGroupId });
-    }
-  }
-
-  const sourceCount = evidenceList.length;
-  const independentOrigins = groups.length;
-  const duplicateGroups = groups.filter((g) => g.members.length > 1).length;
-
+function traceStep(
+  id: string,
+  role: AgentTraceStep['role'],
+  label: string,
+  status: AgentTraceStep['status'],
+  durationMs: number,
+  note: string,
+  inputCount?: number,
+  outputCount?: number
+): AgentTraceStep {
   return {
-    evidenceWithGroups: updatedEvidence,
-    sourceIndependence: {
-      sourceCount,
-      independentOrigins,
-      duplicateGroups,
-    },
+    id,
+    role,
+    label,
+    status,
+    durationMs: Math.max(0, durationMs),
+    ...(inputCount === undefined ? {} : { inputCount }),
+    ...(outputCount === undefined ? {} : { outputCount }),
+    note,
   };
 }
 
-/**
- * Claim Build Status Classification (PASS / WARNING / FAIL)
- */
-function classifyClaimBuildStatus(
-  verdict: ClaimVerdict,
-  confidence: number,
-  independentOrigins: number
-): VerificationBuildStatus {
-  // FAIL:
-  // - Verdict is contradicted
-  // - Or verdict is insufficient with confidence <= 0.30
-  if (verdict === 'contradicted' || (verdict === 'insufficient' && confidence <= 0.30)) {
-    return 'fail';
-  }
-
-  // PASS:
-  // - Verdict is supported
-  // - AND confidence is at least 0.70 (>= 0.70)
-  // - AND at least two independent origins exist (>= 2)
-  if (verdict === 'supported' && confidence >= 0.70 && independentOrigins >= 2) {
-    return 'pass';
-  }
-
-  // WARNING:
-  // - Verdict is partial
-  // - Verdict is insufficient above 0.30 (> 0.30)
-  // - Verdict is supported but has fewer than two independent origins (< 2)
-  // - Verdict is supported with confidence below 0.70 (< 0.70)
-  return 'warning';
+function buildManifest(
+  workflowMode: WorkflowMode,
+  model: string,
+  run: Pick<ResearchRun, 'claims' | 'metrics' | 'providerMetadata'>,
+  trace: AgentTraceStep[]
+) {
+  const focusedExtractCount = run.claims.reduce(
+    (count, claim) => count + claim.evidence.filter((evidence) => evidence.evidenceBasis === 'focused-source-extract').length,
+    0
+  );
+  const retainedEvidenceCount = run.claims.reduce((count, claim) => count + claim.evidence.length, 0);
+  return {
+    manifestVersion: '1.0' as const,
+    pipelineVersion: PIPELINE_VERSION,
+    workflowMode,
+    generatedAt: new Date().toISOString(),
+    model,
+    buildRulesVersion: BUILD_RULES_VERSION,
+    sourceIndependenceVersion: SOURCE_INDEPENDENCE_VERSION,
+    claimCount: run.claims.length,
+    sourcesScanned: run.metrics.sourcesScanned,
+    retainedEvidenceCount,
+    focusedExtractCount,
+    snippetFallbackCount: run.claims.reduce(
+      (count, claim) => count + claim.evidence.filter((evidence) => evidence.evidenceBasis === 'search-snippet').length,
+      0
+    ),
+    distinctDomains: run.metrics.distinctDomains,
+    fallbackUsed: run.providerMetadata.fallbackUsed,
+    stageDurationsMs: Object.fromEntries(trace.map((step) => [step.role, step.durationMs])),
+    searchQueries: run.claims.map((claim) => ({
+      claimId: claim.id,
+      supportQuery: claim.searchQueries.support,
+      challengeQuery: claim.searchQueries.challenge,
+    })),
+  };
 }
 
-/**
- * Overall Build Result Calculation
- */
-function calculateOverallBuildResult(claims: Claim[]): BuildResult {
-  let passedClaims = 0;
-  let warningClaims = 0;
-  let failedClaims = 0;
-
-  for (const claim of claims) {
-    if (claim.claimBuildStatus === 'pass') passedClaims++;
-    else if (claim.claimBuildStatus === 'warning') warningClaims++;
-    else if (claim.claimBuildStatus === 'fail') failedClaims++;
-  }
-
-  if (failedClaims > 0) {
-    return {
-      status: 'fail',
-      headline: 'Verification build failed',
-      explanation:
-        'One or more extracted claims failed verification or were directly contradicted by evidence.',
-      passedClaims,
-      warningClaims,
-      failedClaims,
-    };
-  }
-
-  if (warningClaims > 0) {
-    return {
-      status: 'warning',
-      headline: 'Verification build passed with warnings',
-      explanation:
-        'All claims avoided direct failure, but some claims lack strong independent evidence or rely on partial support.',
-      passedClaims,
-      warningClaims,
-      failedClaims,
-    };
-  }
-
+function attachClaimBuildState(claim: Omit<Claim, 'sourceIndependence' | 'claimBuildStatus'>): Claim {
+  const { evidenceWithGroups, sourceIndependence } = analyzeSourceIndependence(claim.evidence);
   return {
-    status: 'pass',
-    headline: 'Verification build passed',
-    explanation:
-      'Every extracted claim earned strong, independent supporting evidence across multiple origins.',
-    passedClaims,
-    warningClaims,
-    failedClaims,
+    ...claim,
+    evidence: evidenceWithGroups,
+    sourceIndependence,
+    claimBuildStatus: classifyClaimBuildStatus(
+      claim.verdict,
+      claim.confidence,
+      sourceIndependence.independentOrigins
+    ),
   };
+}
+
+function auditAnchorForClaim(
+  workflowMode: WorkflowMode,
+  originalText: string,
+  extractedClaim: ExtractedClaim
+) {
+  if (workflowMode !== 'audit' || !extractedClaim.sourceQuote) return undefined;
+  return anchorAuditQuotes(originalText, [{ id: 'claim', sourceQuote: extractedClaim.sourceQuote }]).claim;
 }
 
 export async function runResearchPipeline(
   request: ResearchApiRequest
 ): Promise<ResearchPipelineResult> {
-  const startTime = Date.now();
+  const startedAt = Date.now();
   const env = getEnv();
-
+  const workflowMode: WorkflowMode = request.mode === 'audit' ? 'audit' : 'research';
+  const inputText = request.mode === 'audit' ? request.text : request.query;
   let usedFallback = false;
 
-  const workflowMode: WorkflowMode = request.mode === 'audit' ? 'audit' : 'research';
-  const inputQueryOrText =
-    workflowMode === 'audit'
-      ? request.text || request.query || ''
-      : request.query || request.text || '';
-
-  // Stage 1: Initial Research (Skipped in Audit Mode)
+  const trace: AgentTraceStep[] = [];
   let initialSources: RawSource[] = [];
+  const searchStartedAt = Date.now();
   if (workflowMode === 'research') {
-    initialSources = await searchInitialSources(inputQueryOrText, env.TAVILY_API_KEY);
+    initialSources = await searchInitialSources(inputText, env.TAVILY_API_KEY);
+    trace.push(traceStep('stage-1', 'researcher', 'Initial Tavily research search', 'completed', Date.now() - searchStartedAt, 'Initial research context retrieved.', 1, initialSources.length));
+  } else {
+    trace.push(traceStep('stage-1', 'researcher', 'Initial Tavily research search', 'skipped', 0, 'Audit mode uses the pasted answer as its source context.', 0, 0));
   }
 
-  // Stage 2: Claim Extraction
-  const extractionResult = await extractClaimsWithGemini(
-    inputQueryOrText,
+  const extractionStartedAt = Date.now();
+  const extraction = await extractClaimsWithGemini(
+    inputText,
     initialSources,
     workflowMode,
     env.GEMINI_API_KEY_PRIMARY,
     env.GEMINI_API_KEY_SECONDARY,
     env.GEMINI_MODEL
   );
-  if (extractionResult.usedFallback) usedFallback = true;
-  const extractedClaims = extractionResult.data;
+  usedFallback ||= extraction.usedFallback;
+  const extractedClaims = extraction.data;
+  trace.push(traceStep('stage-2', 'claim-decomposer', 'Gemini atomic claim extraction', extraction.usedFallback ? 'fallback' : 'completed', Date.now() - extractionStartedAt, workflowMode === 'audit' ? 'Claims were extracted from the pasted answer only.' : 'Claims were extracted from the query and initial sources.', 1, extractedClaims.length));
 
-  // Stage 3: Evidence Search (Parallel for each claim)
-  const candidateEvidencePromises = extractedClaims.map((claim, idx) =>
-    searchClaimEvidence(
-      claim.supportQuery,
-      claim.challengeQuery,
-      env.TAVILY_API_KEY,
-      idx + 1
-    )
+  const evidenceSearchStartedAt = Date.now();
+  const rawCandidatesPerClaim = await Promise.all(
+    extractedClaims.map((claim, index) => searchClaimEvidence(claim.supportQuery, claim.challengeQuery, env.TAVILY_API_KEY, index + 1))
   );
-  const rawCandidatesPerClaim = await Promise.all(candidateEvidencePromises);
+  trace.push(traceStep('stage-3', 'challenger', 'Support and challenge evidence retrieval', 'completed', Date.now() - evidenceSearchStartedAt, 'Support and challenge searches ran in parallel.', extractedClaims.length * 2, rawCandidatesPerClaim.reduce((count, candidates) => count + candidates.length, 0)));
 
-  // Stage 4: Focused Evidence Extraction (Parallel for each claim via Tavily Extract)
-  const extractionPromises = extractedClaims.map((claim, idx) =>
-    extractFocusedEvidence(claim.text, rawCandidatesPerClaim[idx], env.TAVILY_API_KEY)
+  const focusedExtractionStartedAt = Date.now();
+  const enrichedCandidatesPerClaim = await Promise.all(
+    extractedClaims.map((claim, index) => extractFocusedEvidence(claim.text, rawCandidatesPerClaim[index], env.TAVILY_API_KEY))
   );
-  const enrichedCandidatesPerClaim = await Promise.all(extractionPromises);
+  trace.push(traceStep('stage-4', 'source-reader', 'Tavily focused source extraction', 'completed', Date.now() - focusedExtractionStartedAt, 'Focused source passages were retained with snippet fallback where needed.', rawCandidatesPerClaim.reduce((count, candidates) => count + candidates.length, 0), enrichedCandidatesPerClaim.reduce((count, candidates) => count + candidates.length, 0)));
 
-  // Stage 5: Claim Verification (Sequential per claim to avoid rate limit bursts)
-  const baseClaims: Array<Omit<Claim, 'sourceIndependence' | 'claimBuildStatus'>> = [];
-
-  for (let idx = 0; idx < extractedClaims.length; idx++) {
-    const claim = extractedClaims[idx];
-    const result = await verifyClaimWithGemini(
-      claim.text,
-      idx + 1,
-      enrichedCandidatesPerClaim[idx],
+  const verificationStartedAt = Date.now();
+  let verifierFallback = false;
+  const verifiedClaims: Claim[] = [];
+  for (let index = 0; index < extractedClaims.length; index++) {
+    const extractedClaim = extractedClaims[index];
+    const verification = await verifyClaimWithGemini(
+      extractedClaim.text,
+      index + 1,
+      enrichedCandidatesPerClaim[index],
       env.GEMINI_API_KEY_PRIMARY,
       env.GEMINI_API_KEY_SECONDARY,
-      env.GEMINI_MODEL
+      env.GEMINI_MODEL,
+      { support: extractedClaim.supportQuery, challenge: extractedClaim.challengeQuery }
     );
-    if (result.usedFallback) usedFallback = true;
-    baseClaims.push(result.claim);
+    usedFallback ||= verification.usedFallback;
+    verifierFallback ||= verification.usedFallback;
+    const claim = attachClaimBuildState(verification.claim);
+    const auditAnchor = auditAnchorForClaim(workflowMode, inputText, extractedClaim);
+    verifiedClaims.push(auditAnchor ? { ...claim, sourceQuote: extractedClaim.sourceQuote, auditAnchor } : claim);
   }
+  trace.push(traceStep('stage-5', 'verifier', 'Gemini evidence verification', verifierFallback ? 'fallback' : 'completed', Date.now() - verificationStartedAt, 'All extracted claims were verified against retained evidence.', enrichedCandidatesPerClaim.reduce((count, candidates) => count + candidates.length, 0), verifiedClaims.length));
 
-  // Analyze Source Independence & Classify Build Status for each claim
-  const verifiedClaims: Claim[] = baseClaims.map((baseClaim) => {
-    const { evidenceWithGroups, sourceIndependence } = analyzeSourceIndependence(
-      baseClaim.evidence
-    );
-    const claimBuildStatus = classifyClaimBuildStatus(
-      baseClaim.verdict,
-      baseClaim.confidence,
-      sourceIndependence.independentOrigins
-    );
+  const buildResult = calculateOverallBuildResult(verifiedClaims);
+  const metrics = calculateEvidenceMetrics(initialSources, enrichedCandidatesPerClaim, verifiedClaims, Date.now() - startedAt);
 
-    return {
-      ...baseClaim,
-      evidence: evidenceWithGroups,
-      sourceIndependence,
-      claimBuildStatus,
-    };
-  });
-
-  // Stage 6: Synthesis & Overall Build Result
-  const synthesisResult = await synthesizeReportWithGemini(
-    inputQueryOrText,
-    baseClaims,
+  const synthesisStartedAt = Date.now();
+  const synthesis = await synthesizeReportWithGemini(
+    inputText,
+    verifiedClaims,
     env.GEMINI_API_KEY_PRIMARY,
     env.GEMINI_API_KEY_SECONDARY,
     env.GEMINI_MODEL
   );
-  if (synthesisResult.usedFallback) usedFallback = true;
-  const summary = synthesisResult.data;
+  usedFallback ||= synthesis.usedFallback;
+  trace.push(traceStep('stage-6', 'synthesizer', 'Final synthesis', synthesis.usedFallback ? 'fallback' : 'completed', Date.now() - synthesisStartedAt, 'Summary compiled from verified claim decisions only.', verifiedClaims.length, 1));
 
-  const buildResult = calculateOverallBuildResult(verifiedClaims);
-
-  const durationMs = Date.now() - startTime;
-
-  // Calculate metrics
-  const allSourcesMap = new Map<string, string>();
-  for (const s of initialSources) {
-    allSourcesMap.set(s.url, s.domain);
-  }
-  for (const claimEvList of enrichedCandidatesPerClaim) {
-    for (const ev of claimEvList) {
-      allSourcesMap.set(ev.url, ev.domain);
-    }
-  }
-
-  const sourcesScanned = allSourcesMap.size;
-  const distinctDomains = new Set(allSourcesMap.values()).size;
-
-  const retainedUrlBasisMap = new Map<string, EvidenceBasis>();
-  for (const claim of verifiedClaims) {
-    for (const ev of claim.evidence) {
-      const canonical = ev.url.toLowerCase().replace(/\/$/, '');
-      if (!retainedUrlBasisMap.has(canonical)) {
-        retainedUrlBasisMap.set(canonical, ev.evidenceBasis);
-      }
-    }
-  }
-
-  let extractedSources = 0;
-  let snippetFallbackSources = 0;
-  for (const basis of retainedUrlBasisMap.values()) {
-    if (basis === 'focused-source-extract') {
-      extractedSources++;
-    } else {
-      snippetFallbackSources++;
-    }
-  }
-
-  const supportedClaims = verifiedClaims.filter((c) => c.verdict === 'supported').length;
-  const challengedClaims = verifiedClaims.filter(
-    (c) => c.verdict === 'contradicted' || c.verdict === 'partial'
-  ).length;
-  const insufficientClaims = verifiedClaims.filter(
-    (c) => c.verdict === 'insufficient'
-  ).length;
-
-  const metrics: ResearchMetrics = {
-    durationMs,
-    sourcesScanned,
-    extractedSources,
-    snippetFallbackSources,
-    distinctDomains,
-    supportedClaims,
-    challengedClaims,
-    insufficientClaims,
-  };
-
-  const run: ResearchRun = {
+  const providerMetadata = { fallbackUsed: usedFallback };
+  const finalMetrics = { ...metrics, durationMs: Date.now() - startedAt };
+  const runBase = {
     id: `run-${Date.now()}`,
-    query: inputQueryOrText,
-    summary,
+    query: inputText,
+    summary: synthesis.data,
     claims: verifiedClaims,
-    metrics,
-    mode: 'live',
+    metrics: finalMetrics,
+    mode: 'live' as const,
     workflowMode,
     buildResult,
-    providerMetadata: {
-      fallbackUsed: usedFallback,
+    providerMetadata,
+    agentTrace: trace,
+    summaryMetadata: {
+      generatedAt: new Date().toISOString(),
+      stale: false,
+      staleReason: null,
     },
     createdAt: new Date().toISOString(),
   };
+  const manifest = buildManifest(workflowMode, env.GEMINI_MODEL, runBase, trace);
+  const run: ResearchRun = { ...runBase, manifest };
+
+  return { run, usedFallback };
+}
+
+export interface ReverificationResult {
+  claim: Claim;
+  trace: AgentTraceStep[];
+  usedFallback: boolean;
+  manifestPatch: {
+    generatedAt: string;
+    model: string;
+    evidenceCount: number;
+    focusedExtractCount: number;
+    snippetFallbackCount: number;
+  };
+}
+
+export async function reverifyClaim(request: ReverifyRequest): Promise<ReverificationResult> {
+  const env = getEnv();
+  const trace: AgentTraceStep[] = [];
+  const searchStartedAt = Date.now();
+  const candidates = await searchClaimEvidence(
+    [request.supportQuery, request.nextBestQuery],
+    request.challengeQuery,
+    env.TAVILY_API_KEY,
+    1
+  );
+  trace.push(traceStep('reverify-1', 'challenger', 'Focused support and challenge search', 'completed', Date.now() - searchStartedAt, 'Only the requested claim queries were searched.', 3, candidates.length));
+
+  const extractStartedAt = Date.now();
+  const focused = await extractFocusedEvidence(request.claimText, candidates, env.TAVILY_API_KEY);
+  trace.push(traceStep('reverify-2', 'source-reader', 'Focused source extraction', 'completed', Date.now() - extractStartedAt, 'Focused passages were refreshed for the requested claim.', candidates.length, focused.length));
+
+  const verifyStartedAt = Date.now();
+  const verification = await verifyClaimWithGemini(
+    request.claimText,
+    1,
+    focused,
+    env.GEMINI_API_KEY_PRIMARY,
+    env.GEMINI_API_KEY_SECONDARY,
+    env.GEMINI_MODEL,
+    { support: request.supportQuery, challenge: request.challengeQuery }
+  );
+  const claim = attachClaimBuildState({ ...verification.claim, id: request.claimId });
+  trace.push(traceStep('reverify-3', 'verifier', 'Focused claim verification', verification.usedFallback ? 'fallback' : 'completed', Date.now() - verifyStartedAt, 'The selected claim was recalculated without synthesis.', focused.length, 1));
 
   return {
-    run,
-    usedFallback,
+    claim,
+    trace,
+    usedFallback: verification.usedFallback,
+    manifestPatch: {
+      generatedAt: new Date().toISOString(),
+      model: env.GEMINI_MODEL,
+      evidenceCount: claim.evidence.length,
+      focusedExtractCount: claim.evidence.filter((evidence) => evidence.evidenceBasis === 'focused-source-extract').length,
+      snippetFallbackCount: claim.evidence.filter((evidence) => evidence.evidenceBasis === 'search-snippet').length,
+    },
   };
 }

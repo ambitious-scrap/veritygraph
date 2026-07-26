@@ -31,12 +31,21 @@ export interface SourceIndependence {
   sourceCount: number;
   independentOrigins: number;
   duplicateGroups: number;
+  syndicatedSourceCount: number;
+}
+
+export interface AuditAnchor {
+  quote: string;
+  startIndex: number | null;
+  endIndex: number | null;
+  matchStatus: 'exact' | 'case-insensitive' | 'normalized' | 'unmatched';
 }
 
 export interface Claim {
   id: string;
   text: string;
   verdict: ClaimVerdict;
+  sourceQuote?: string;
   confidence: number;
   explanation: string;
   evidence: Evidence[];
@@ -44,7 +53,12 @@ export interface Claim {
   sourceIndependence: SourceIndependence;
   missingEvidence: string;
   nextBestQuery: string;
+  searchQueries: {
+    support: string;
+    challenge: string;
+  };
   claimBuildStatus: VerificationBuildStatus;
+  auditAnchor?: AuditAnchor;
 }
 
 export interface ResearchMetrics {
@@ -71,6 +85,54 @@ export interface BuildResult {
   failedClaims: number;
 }
 
+export type AgentRole =
+  | 'researcher'
+  | 'claim-decomposer'
+  | 'challenger'
+  | 'source-reader'
+  | 'verifier'
+  | 'synthesizer';
+
+export interface AgentTraceStep {
+  id: string;
+  role: AgentRole;
+  label: string;
+  status: 'completed' | 'skipped' | 'fallback';
+  durationMs: number;
+  inputCount?: number;
+  outputCount?: number;
+  note: string;
+}
+
+export interface ReproducibilityManifest {
+  manifestVersion: '1.0';
+  pipelineVersion: string;
+  workflowMode: WorkflowMode;
+  generatedAt: string;
+  model: string;
+  buildRulesVersion: string;
+  sourceIndependenceVersion: string;
+  claimCount: number;
+  sourcesScanned: number;
+  retainedEvidenceCount: number;
+  focusedExtractCount: number;
+  snippetFallbackCount: number;
+  distinctDomains: number;
+  fallbackUsed: boolean;
+  stageDurationsMs: Record<string, number>;
+  searchQueries: Array<{
+    claimId: string;
+    supportQuery: string;
+    challengeQuery: string;
+  }>;
+}
+
+export interface SummaryMetadata {
+  generatedAt: string;
+  stale: boolean;
+  staleReason: string | null;
+}
+
 export interface ResearchRun {
   id: string;
   query: string;
@@ -81,13 +143,22 @@ export interface ResearchRun {
   workflowMode: WorkflowMode;
   buildResult: BuildResult;
   providerMetadata: ProviderMetadata;
+  agentTrace: AgentTraceStep[];
+  manifest: ReproducibilityManifest;
+  summaryMetadata: SummaryMetadata;
   createdAt: string;
 }
 
-export interface ResearchApiRequest {
-  mode?: WorkflowMode;
-  query?: string;
-  text?: string;
+export type ResearchApiRequest =
+  | { mode?: 'research'; query: string }
+  | { mode: 'audit'; text: string };
+
+export interface ReverifyRequest {
+  claimId: string;
+  claimText: string;
+  supportQuery: string;
+  challengeQuery: string;
+  nextBestQuery: string;
 }
 
 export type PipelineStage =
@@ -96,7 +167,8 @@ export type PipelineStage =
   | 'evidence-search'
   | 'focused-extraction'
   | 'verification'
-  | 'synthesis';
+  | 'synthesis'
+  | 'reverification';
 
 export class PipelineError extends Error {
   stage: PipelineStage;

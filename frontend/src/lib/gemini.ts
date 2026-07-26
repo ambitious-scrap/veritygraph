@@ -1,6 +1,7 @@
 import { GoogleGenAI, Type } from '@google/genai';
 import { z } from 'zod';
-import { RawSource, CandidateEvidence, fetchWithTimeout } from './tavily';
+import { RawSource, CandidateEvidence } from './tavily';
+import { canonicalizeUrl } from './verificationRules';
 import {
   Claim,
   ClaimVerdict,
@@ -13,6 +14,7 @@ import {
 
 export interface ExtractedClaim {
   text: string;
+  sourceQuote?: string;
   supportQuery: string;
   challengeQuery: string;
 }
@@ -22,39 +24,38 @@ export interface GeminiCallResult<T> {
   usedFallback: boolean;
 }
 
-type GeminiFailureKind =
-  | 'retryable-provider'
-  | 'non-retryable-provider'
-  | 'invalid-output';
+type GeminiFailureKind = 'retryable-provider' | 'non-retryable-provider' | 'invalid-output';
 
 interface CategorizedError {
   kind: GeminiFailureKind;
   message: string;
 }
 
-const openRouterCompletionSchema = z.object({
-  choices: z
-    .array(
-      z.object({
-        message: z.object({
-          content: z.string().nullable().optional(),
-        }),
-      })
-    )
-    .optional()
-    .default([]),
-});
+const GEMINI_TIMEOUT_MS = 20_000;
+const GEMINI_FALLBACK_DELAY_MS = 250;
 
-const GEMINI_TIMEOUT_MS = 20000;
-
-// Strict Zod Schemas
-const claimExtractionSchema = z
+const researchClaimSchema = z
   .array(
-    z.object({
-      text: z.string().transform((s) => s.replace(/\s+/g, ' ').trim()),
-      supportQuery: z.string().transform((s) => s.replace(/\s+/g, ' ').trim()),
-      challengeQuery: z.string().transform((s) => s.replace(/\s+/g, ' ').trim()),
-    })
+    z
+      .object({
+        text: z.string().min(10).max(500),
+        supportQuery: z.string().min(3).max(300),
+        challengeQuery: z.string().min(3).max(300),
+      })
+      .strict()
+  )
+  .length(3);
+
+const auditClaimSchema = z
+  .array(
+    z
+      .object({
+        text: z.string().min(10).max(500),
+        sourceQuote: z.string().min(10).max(600),
+        supportQuery: z.string().min(3).max(300),
+        challengeQuery: z.string().min(3).max(300),
+      })
+      .strict()
   )
   .length(3);
 
@@ -64,7 +65,7 @@ const rawVerificationSchema = z
     confidence: z.number().min(0).max(100),
     explanation: z.string().min(10).max(800),
     missingEvidence: z.string().min(10).max(400),
-    nextBestQuery: z.string().min(3).max(250),
+    nextBestQuery: z.string().min(3).max(300),
     evidence: z
       .array(
         z
@@ -85,27 +86,30 @@ const synthesisSchema = z
   })
   .strict();
 
-/**
- * Promise-based 20-second timeout wrapper for Gemini calls
- */
 function withTimeout<T>(promise: Promise<T>, timeoutMs = GEMINI_TIMEOUT_MS): Promise<T> {
-  let timeoutId: NodeJS.Timeout | number;
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeoutId = setTimeout(() => {
-      const err = new Error('Gemini request timed out after 20 seconds');
-      err.name = 'TimeoutError';
-      reject(err);
+      const error = new Error('Gemini request timed out');
+      error.name = 'TimeoutError';
+      reject(error);
     }, timeoutMs);
   });
-
   return Promise.race([promise, timeoutPromise]).finally(() => {
-    clearTimeout(timeoutId!);
+    clearTimeout(timeoutId);
   });
 }
 
-/**
- * Classifies an error into retryable, non-retryable, or invalid output
- */
+function numericStatus(error: unknown): number | null {
+  if (!error || typeof error !== 'object') return null;
+  for (const key of ['status', 'statusCode', 'httpStatus']) {
+    const value = (error as Record<string, unknown>)[key];
+    if (typeof value === 'number') return value;
+    if (typeof value === 'string' && /^\d{3}$/.test(value)) return Number(value);
+  }
+  return null;
+}
+
 function classifyError(error: unknown): CategorizedError {
   if (
     error &&
@@ -118,173 +122,177 @@ function classifyError(error: unknown): CategorizedError {
     return error as CategorizedError;
   }
 
-  const msg = error instanceof Error ? error.message : String(error);
+  const message = error instanceof Error ? error.message : String(error);
   const name = error instanceof Error ? error.name : '';
-  const lowerMsg = msg.toLowerCase();
-
-  if (
-    name === 'TimeoutError' ||
-    lowerMsg.includes('429') ||
-    lowerMsg.includes('500') ||
-    lowerMsg.includes('502') ||
-    lowerMsg.includes('503') ||
-    lowerMsg.includes('quota') ||
-    lowerMsg.includes('rate limit') ||
-    lowerMsg.includes('resource_exhausted') ||
-    lowerMsg.includes('overloaded') ||
-    lowerMsg.includes('unavailable') ||
-    lowerMsg.includes('network') ||
-    lowerMsg.includes('fetch failed') ||
-    lowerMsg.includes('econnreset') ||
-    lowerMsg.includes('etimedout') ||
-    lowerMsg.includes('openrouter')
-  ) {
-    return { kind: 'retryable-provider', message: 'Provider temporary unavailability or rate limit' };
+  const status = numericStatus(error);
+  if ([429, 500, 502, 503].includes(status ?? -1)) {
+    return { kind: 'retryable-provider', message: 'Temporary Gemini provider failure' };
+  }
+  if (name === 'TimeoutError') {
+    return { kind: 'retryable-provider', message: 'Gemini provider timeout' };
   }
 
+  const lower = message.toLowerCase();
   if (
-    lowerMsg.includes('400') ||
-    lowerMsg.includes('401') ||
-    lowerMsg.includes('403') ||
-    lowerMsg.includes('404') ||
-    lowerMsg.includes('invalid model') ||
-    lowerMsg.includes('not found') ||
-    lowerMsg.includes('key not valid')
+    /\b(?:429|500|502|503)\b/.test(lower) ||
+    /\b(?:econnreset|etimedout|econnrefused|enotfound|eai_again)\b/.test(lower) ||
+    lower.includes('network') ||
+    lower.includes('fetch failed') ||
+    lower.includes('connection')
   ) {
-    return { kind: 'non-retryable-provider', message: 'Invalid model configuration or key permissions' };
+    return { kind: 'retryable-provider', message: 'Temporary Gemini provider failure' };
   }
+  if ([400, 401, 403, 404].includes(status ?? -1)) {
+    return { kind: 'non-retryable-provider', message: 'Invalid Gemini request or permissions' };
+  }
+  if (/\b(?:400|401|403|404)\b/.test(lower) || lower.includes('invalid model') || lower.includes('key not valid')) {
+    return { kind: 'non-retryable-provider', message: 'Invalid Gemini request or permissions' };
+  }
+  return { kind: 'invalid-output', message: 'Gemini response processing failure' };
+}
+export async function runGeminiWithFallback<T>(
+  primaryCall: () => Promise<T>,
+  secondaryCall: () => Promise<T>,
+  stage: PipelineStage,
+  fallbackDelayMs = GEMINI_FALLBACK_DELAY_MS
+): Promise<GeminiCallResult<T>> {
+  try {
+    return { data: await primaryCall(), usedFallback: false };
+  } catch (primaryError) {
+    if (classifyError(primaryError).kind !== 'retryable-provider') {
+      throw new PipelineError(stage, `Gemini service execution failed during ${stage}.`);
+    }
 
-  return { kind: 'invalid-output', message: msg || 'Model output processing failure' };
+    await new Promise((resolve) => setTimeout(resolve, fallbackDelayMs));
+    try {
+      return { data: await secondaryCall(), usedFallback: true };
+    } catch {
+      throw new PipelineError(stage, `Gemini service failed during ${stage} across both configured keys.`);
+    }
+  }
 }
 
-/**
- * Gemini JSON caller with strict failure classification and dual-key failover logic
- */
+
 async function callGeminiJson<T>(
   prompt: string,
   stage: PipelineStage,
-  schema: z.ZodSchema<T>,
+  schema: z.ZodType<T>,
   primaryKey: string,
   secondaryKey: string,
   modelName: string,
   responseSchema?: Record<string, unknown>,
-  customValidator?: (val: T) => void
+  customValidator?: (value: T) => void
 ): Promise<GeminiCallResult<T>> {
   const tryCall = async (apiKey: string): Promise<T> => {
-    let text = '';
-    if (apiKey.startsWith('sk-or-v1-')) {
-      const targetModel = modelName.includes('/')
-        ? modelName
-        : 'google/gemini-2.5-flash';
-      const resPromise = fetchWithTimeout('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: targetModel,
-          messages: [{ role: 'user', content: prompt }],
-          response_format: { type: 'json_object' },
-          max_tokens: 2000,
-        }),
-      });
-
-      const res = await withTimeout(resPromise);
-      if (!res.ok) {
-        throw new Error(`OpenRouter HTTP error status (${res.status})`);
-      }
-
-      const data = await res.json();
-      const openRouterParsed = openRouterCompletionSchema.safeParse(data);
-      if (openRouterParsed.success) {
-        text = openRouterParsed.data.choices[0]?.message?.content || '';
-      }
-    } else {
-      const ai = new GoogleGenAI({ apiKey });
-      const apiPromise = ai.models.generateContent({
+    const ai = new GoogleGenAI({ apiKey });
+    const response = await withTimeout(
+      ai.models.generateContent({
         model: modelName,
         contents: prompt,
         config: {
           responseMimeType: 'application/json',
           ...(responseSchema ? { responseSchema } : {}),
         },
-      });
-
-      const response = await withTimeout(apiPromise);
-      text = response.text || '';
-    }
-
+      })
+    );
+    const text = response.text || '';
     if (!text.trim()) {
-      throw { kind: 'invalid-output', message: 'Empty model response text' } as CategorizedError;
+      throw { kind: 'invalid-output', message: 'Empty model response' } as CategorizedError;
     }
 
     let rawJson: unknown;
     try {
       rawJson = JSON.parse(text);
     } catch {
-      throw { kind: 'invalid-output', message: 'JSON parsing failure' } as CategorizedError;
+      throw { kind: 'invalid-output', message: 'Invalid JSON model response' } as CategorizedError;
     }
 
     const parsed = schema.safeParse(rawJson);
     if (!parsed.success) {
-      throw { kind: 'invalid-output', message: 'Zod schema validation failure' } as CategorizedError;
+      throw { kind: 'invalid-output', message: 'Invalid model response schema' } as CategorizedError;
     }
-
-    if (customValidator) {
-      customValidator(parsed.data);
-    }
-
+    customValidator?.(parsed.data);
     return parsed.data;
   };
 
-  // 1. Try Primary Key
-  try {
-    const data = await tryCall(primaryKey);
-    return { data, usedFallback: false };
-  } catch (primaryErr) {
-    const categorized = classifyError(primaryErr);
+  return runGeminiWithFallback(() => tryCall(primaryKey), () => tryCall(secondaryKey), stage);
+}
 
-    // Fallback ONLY for retryable provider errors (429, 500, 502, 503, timeout, network)
-    if (categorized.kind === 'retryable-provider') {
-      // Pause 3s before trying secondary key
-      await new Promise((resolve) => setTimeout(resolve, 3000));
-      try {
-        const data = await tryCall(secondaryKey);
-        return { data, usedFallback: true };
-      } catch {
-        // Pause 20s and retry primary key
-        await new Promise((resolve) => setTimeout(resolve, 20000));
-        try {
-          const data = await tryCall(primaryKey);
-          return { data, usedFallback: false };
-        } catch {
-          // Pause 20s and retry secondary key final time
-          await new Promise((resolve) => setTimeout(resolve, 20000));
-          try {
-            const data = await tryCall(secondaryKey);
-            return { data, usedFallback: true };
-          } catch {
-            throw new PipelineError(
-              stage,
-              `Gemini service failed during ${stage} across both primary and secondary keys.`
-            );
-          }
-        }
-      }
+function normalizeClaim(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+function claimTokens(value: string): Set<string> {
+  return new Set(
+    normalizeClaim(value)
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .split(/\s+/)
+      .filter((token) => token.length > 2)
+  );
+}
+
+function claimSimilarity(a: string, b: string): number {
+  const left = claimTokens(a);
+  const right = claimTokens(b);
+  if (!left.size || !right.size) return 0;
+  let intersection = 0;
+  for (const token of left) if (right.has(token)) intersection++;
+  return intersection / (left.size + right.size - intersection);
+}
+
+function validateClaims(claims: ExtractedClaim[]) {
+  for (const claim of claims) {
+    claim.text = normalizeClaim(claim.text);
+    claim.sourceQuote = claim.sourceQuote ? normalizeClaim(claim.sourceQuote) : undefined;
+    claim.supportQuery = normalizeClaim(claim.supportQuery);
+    claim.challengeQuery = normalizeClaim(claim.challengeQuery);
+    if (!claim.text || !claim.supportQuery || !claim.challengeQuery || (claim.sourceQuote !== undefined && !claim.sourceQuote)) {
+      throw { kind: 'invalid-output', message: 'Empty normalized claim field' } as CategorizedError;
     }
+  }
 
-    // Non-retryable provider error or invalid output -> fail immediately without fallback
-    throw new PipelineError(
-      stage,
-      `Gemini service execution failed during ${stage}.`
-    );
+  if (new Set(claims.map((claim) => claim.text.toLowerCase())).size !== 3) {
+    throw { kind: 'invalid-output', message: 'Duplicate claims' } as CategorizedError;
+  }
+  if (claims.some((claim, index) => claims.slice(index + 1).some((other) => claimSimilarity(claim.text, other.text) >= 0.72))) {
+    throw { kind: 'invalid-output', message: 'Paraphrased duplicate claims' } as CategorizedError;
+  }
+  if (new Set(claims.map((claim) => claim.supportQuery.toLowerCase())).size === 1) {
+    throw { kind: 'invalid-output', message: 'Identical support queries' } as CategorizedError;
+  }
+  if (new Set(claims.map((claim) => claim.challengeQuery.toLowerCase())).size === 1) {
+    throw { kind: 'invalid-output', message: 'Identical challenge queries' } as CategorizedError;
   }
 }
 
-/**
- * Stage 2: Claim Extraction with Gemini (Supports Research & Audit modes)
- */
+const researchResponseSchema = {
+  type: Type.ARRAY,
+  items: {
+    type: Type.OBJECT,
+    properties: {
+      text: { type: Type.STRING },
+      supportQuery: { type: Type.STRING },
+      challengeQuery: { type: Type.STRING },
+    },
+    required: ['text', 'supportQuery', 'challengeQuery'],
+  },
+};
+
+const auditResponseSchema = {
+  type: Type.ARRAY,
+  items: {
+    type: Type.OBJECT,
+    properties: {
+      text: { type: Type.STRING },
+      sourceQuote: { type: Type.STRING },
+      supportQuery: { type: Type.STRING },
+      challengeQuery: { type: Type.STRING },
+    },
+    required: ['text', 'sourceQuote', 'supportQuery', 'challengeQuery'],
+  },
+};
+
 export async function extractClaimsWithGemini(
   inputQueryOrText: string,
   sources: RawSource[],
@@ -293,126 +301,42 @@ export async function extractClaimsWithGemini(
   secondaryKey: string,
   modelName: string
 ): Promise<GeminiCallResult<ExtractedClaim[]>> {
-  const prompt =
-    workflowMode === 'audit'
-      ? `You are an AI answer verification compiler.
-Pasted AI Answer to Audit:
-"""
-${inputQueryOrText}
-"""
-
-Instructions:
-1. Extract EXACTLY 3 important, factual, check-worthy atomic claims derived ONLY from the pasted AI answer above.
-2. Do NOT add claims not present in the answer.
-3. Prioritize factual, check-worthy claims. Ignore opinions, recommendations, and rhetorical statements.
-4. For each claim, generate a target search query to find supporting evidence (supportQuery) and a target search query to find challenging/opposing evidence (challengeQuery).
-5. Return EXACTLY 3 unique atomic claims in JSON matching the schema.`
-      : `You are a scientific fact-verification system.
-User Query: "${inputQueryOrText}"
-
-Initial Sources:
-${
-  sources.length > 0
-    ? sources.map((s) => `[${s.id}] Title: ${s.title} (${s.domain})\nExcerpt: ${s.excerpt}`).join('\n\n')
-    : 'No external web sources retrieved.'
-}
-
-Task: Extract EXACTLY 3 atomic, specific, independently verifiable, important claims derived from the user query and initial sources.
-For each claim, generate a target search query to find supporting evidence (supportQuery) and a target search query to find challenging/opposing evidence (challengeQuery).
-
-Do NOT include citations, URLs, or external markdown in any field.
-Respond ONLY with a JSON array of EXACTLY 3 objects matching the schema.`;
-
-  const responseSchema = {
-    type: Type.ARRAY,
-    items: {
-      type: Type.OBJECT,
-      properties: {
-        text: { type: Type.STRING },
-        supportQuery: { type: Type.STRING },
-        challengeQuery: { type: Type.STRING },
-      },
-      required: ['text', 'supportQuery', 'challengeQuery'],
-    },
-  };
-
-  // Custom validator to normalize strings & reject duplicate claims
-  const validateAndNormalizeClaims = (claims: ExtractedClaim[]) => {
-    for (const c of claims) {
-      c.text = c.text.replace(/\s+/g, ' ').trim();
-      c.supportQuery = c.supportQuery.replace(/\s+/g, ' ').trim();
-      c.challengeQuery = c.challengeQuery.replace(/\s+/g, ' ').trim();
-    }
-
-    const uniqueNormalized = new Set(claims.map((c) => c.text.toLowerCase()));
-    if (uniqueNormalized.size !== 3) {
-      throw { kind: 'invalid-output', message: 'Model returned duplicate claims' } as CategorizedError;
-    }
-  };
+  const prompt = workflowMode === 'audit'
+    ? `You are an AI answer verification compiler.\n\nPasted AI Answer to Audit:\n"""\n${inputQueryOrText}\n"""\n\nExtract EXACTLY three important factual claims found only in the pasted answer. Ignore opinions, advice, rhetoric, and vague predictions. Copy sourceQuote verbatim from the answer; never paraphrase it. Do not introduce external facts. Return only the strict JSON array.`
+    : `You are a scientific fact-verification system.\nUser Query: "${inputQueryOrText}"\n\nInitial Sources:\n${sources.length ? sources.map((source) => `[${source.id}] ${source.title} (${source.domain})\n${source.excerpt}`).join('\n\n') : 'No external web sources retrieved.'}\n\nExtract EXACTLY three atomic, specific, independently verifiable factual claims derived from the query and supplied sources. Return distinct supportQuery and challengeQuery values for each claim. Do not include citations or URLs. Return only the strict JSON array.`;
 
   return callGeminiJson(
     prompt,
     'claim-extraction',
-    claimExtractionSchema,
+    workflowMode === 'audit' ? auditClaimSchema : researchClaimSchema,
     primaryKey,
     secondaryKey,
     modelName,
-    responseSchema,
-    validateAndNormalizeClaims
+    workflowMode === 'audit' ? auditResponseSchema : researchResponseSchema,
+    validateClaims
   );
 }
 
-/**
- * Stage 4: Claim Verification with Gemini (includes missingEvidence and nextBestQuery)
- */
 export async function verifyClaimWithGemini(
   claimText: string,
   claimIndex: number,
   candidateEvidence: CandidateEvidence[],
   primaryKey: string,
   secondaryKey: string,
-  modelName: string
+  modelName: string,
+  searchQueries: { support: string; challenge: string }
 ): Promise<{
   claim: Omit<Claim, 'sourceIndependence' | 'claimBuildStatus'>;
   usedFallback: boolean;
 }> {
   const sourcesList = candidateEvidence
-    .map(
-      (e) =>
-        `[Source ID: ${e.id}]\nCandidate Type: ${e.candidateType}\nEvidence Basis: ${e.evidenceBasis === 'focused-source-extract' ? 'Focused source extract' : 'Search snippet'}\nTitle: ${e.title}\nDomain: ${e.domain}\nPassage: ${e.excerpt}`
-    )
+    .map((evidence) => `[Source ID: ${evidence.id}]\nCandidate Type: ${evidence.candidateType}\nEvidence Basis: ${evidence.evidenceBasis}\nTitle: ${evidence.title}\nDomain: ${evidence.domain}\nPassage: ${evidence.excerpt}`)
     .join('\n\n');
-
-  const prompt = `You are a strict evidence verifier.
-Claim to verify: "${claimText}"
-
-Retrieved Evidence Sources:
-${sourcesList.length > 0 ? sourcesList : 'No evidence sources available.'}
-
-Instructions:
-Evaluate the claim ONLY using the supplied evidence sources above.
-1. Determine verdict: "supported", "contradicted", "partial", or "insufficient".
-2. Assign a confidence score from 0 to 100.
-3. Provide a concise 1-2 sentence explanation of the reasoning (10 to 800 chars).
-4. Provide missingEvidence: Describe the specific evidence needed to strengthen or reverse the verdict (10 to 400 chars). Do not claim that the missing evidence exists. Do not introduce new factual claims.
-5. Provide nextBestQuery: A focused search query for obtaining that missing evidence (3 to 250 chars).
-6. List the evidence sources evaluated. Each item in the "evidence" array MUST contain: "sourceId" (exact source ID string like c1-ev-s-1), "stance" ("support", "contradict", or "neutral"), and "relevanceScore" (number 0 to 100).
-
-Guidelines:
-* A support candidate is not automatically supporting evidence.
-* A challenge candidate is not automatically contradictory evidence.
-* Search snippets may contain less context than full-source extracts.
-* Evaluate only the supplied passage; do not infer claims from the title alone.
-* Return only supplied source IDs.
-Respond ONLY with JSON containing "verdict", "confidence", "explanation", "missingEvidence", "nextBestQuery", and "evidence" array.`;
-
-  const verificationResponseSchema = {
+  const prompt = `You are a strict evidence verifier.\nClaim to verify: "${claimText}"\n\nRetrieved Evidence Sources:\n${sourcesList || 'No evidence sources available.'}\n\nEvaluate the claim ONLY using supplied passages. Return verdict, confidence from 0 to 100, concise explanation, missingEvidence, nextBestQuery, and evidence items containing only supplied source IDs, stance, and relevanceScore. A support candidate is not automatically supporting evidence. A challenge candidate is not automatically contradictory evidence. Return only JSON.`;
+  const responseSchema = {
     type: Type.OBJECT,
     properties: {
-      verdict: {
-        type: Type.STRING,
-        enum: ['supported', 'contradicted', 'partial', 'insufficient'],
-      },
+      verdict: { type: Type.STRING, enum: ['supported', 'contradicted', 'partial', 'insufficient'] },
       confidence: { type: Type.NUMBER },
       explanation: { type: Type.STRING },
       missingEvidence: { type: Type.STRING },
@@ -423,24 +347,14 @@ Respond ONLY with JSON containing "verdict", "confidence", "explanation", "missi
           type: Type.OBJECT,
           properties: {
             sourceId: { type: Type.STRING },
-            stance: {
-              type: Type.STRING,
-              enum: ['support', 'contradict', 'neutral'],
-            },
+            stance: { type: Type.STRING, enum: ['support', 'contradict', 'neutral'] },
             relevanceScore: { type: Type.NUMBER },
           },
           required: ['sourceId', 'stance', 'relevanceScore'],
         },
       },
     },
-    required: [
-      'verdict',
-      'confidence',
-      'explanation',
-      'missingEvidence',
-      'nextBestQuery',
-      'evidence',
-    ],
+    required: ['verdict', 'confidence', 'explanation', 'missingEvidence', 'nextBestQuery', 'evidence'],
   };
 
   const { data: parsed, usedFallback } = await callGeminiJson(
@@ -450,92 +364,48 @@ Respond ONLY with JSON containing "verdict", "confidence", "explanation", "missi
     primaryKey,
     secondaryKey,
     modelName,
-    verificationResponseSchema
+    responseSchema
   );
 
-  // Strict validated Enum values used directly
-  const rawVerdict: ClaimVerdict = parsed.verdict;
-
-  const candidateMap = new Map<string, CandidateEvidence>();
-  for (const item of candidateEvidence) {
-    candidateMap.set(item.id, item);
-  }
-
+  const candidateMap = new Map(candidateEvidence.map((candidate) => [candidate.id, candidate]));
   const verifiedEvidence: Evidence[] = [];
-  const seenSourceIds = new Set<string>();
   const seenUrls = new Set<string>();
-
-  for (const rawEv of parsed.evidence) {
-    const sId = rawEv.sourceId;
-    if (!sId || seenSourceIds.has(sId)) continue;
-    const candidate = candidateMap.get(sId);
-    if (!candidate) continue;
-
-    // Deduplicate by URL as well
-    const canonicalUrl = candidate.url.toLowerCase().replace(/\/$/, '');
-    if (seenUrls.has(canonicalUrl)) continue;
-
-    // Exclude evidence with relevanceScore < 40
-    if (rawEv.relevanceScore < 40) continue;
-
-    seenSourceIds.add(sId);
-    seenUrls.add(canonicalUrl);
-
-    // Stance is validated Enum: 'support' | 'contradict' | 'neutral'
-    const stance: EvidenceStance = rawEv.stance;
-
+  for (const rawEvidence of parsed.evidence) {
+    const candidate = candidateMap.get(rawEvidence.sourceId);
+    if (!candidate || rawEvidence.relevanceScore < 40) continue;
+    const url = canonicalizeUrl(candidate.url);
+    if (seenUrls.has(url)) continue;
+    seenUrls.add(url);
     verifiedEvidence.push({
       id: candidate.id,
       title: candidate.title,
       url: candidate.url,
       domain: candidate.domain,
       excerpt: candidate.excerpt,
-      stance,
-      relevanceScore: Math.round(rawEv.relevanceScore) / 100, // Decimal 0..1
+      stance: rawEvidence.stance as EvidenceStance,
+      relevanceScore: Math.round(rawEvidence.relevanceScore) / 100,
       evidenceBasis: candidate.evidenceBasis,
-      originGroupId: 'Group A', // Will be populated by analyzeSourceIndependence in research.ts
+      originGroupId: 'origin-0',
     });
   }
 
-  // Rule: No retained evidence means verdict must be "insufficient"
-  let finalVerdict: ClaimVerdict = rawVerdict;
-  if (verifiedEvidence.length === 0) {
-    finalVerdict = 'insufficient';
-  }
-
-  const conf = Math.max(0, Math.min(100, parsed.confidence));
-  const evidenceCount = verifiedEvidence.length;
-  const distinctDomains = new Set(verifiedEvidence.map((e) => e.domain)).size;
-  const hasContradiction =
-    finalVerdict === 'contradicted' ||
-    verifiedEvidence.some((e) => e.stance === 'contradict');
-
-  // Deterministic Confidence Caps:
-  let cappedConf = conf;
+  let verdict: ClaimVerdict = parsed.verdict;
+  if (!verifiedEvidence.length) verdict = 'insufficient';
+  const distinctDomains = new Set(verifiedEvidence.map((evidence) => evidence.domain)).size;
+  let confidence = Math.max(0, Math.min(100, parsed.confidence));
   let appliedCap: string | null = null;
-
-  if (finalVerdict === 'insufficient') {
-    if (cappedConf > 45) {
-      cappedConf = 45;
-      appliedCap = 'Capped at 45% (Insufficient evidence limits score)';
-    }
-  } else if (finalVerdict === 'partial') {
-    if (cappedConf > 75) {
-      cappedConf = 75;
-      appliedCap = 'Capped at 75% (Partial support limits score)';
-    }
-  } else if (
-    (finalVerdict === 'supported' || finalVerdict === 'contradicted') &&
-    distinctDomains < 2
-  ) {
-    if (cappedConf > 70) {
-      cappedConf = 70;
-      appliedCap = 'Capped at 70% (Fewer than 2 distinct domains)';
-    }
+  if (verdict === 'insufficient' && confidence > 45) {
+    confidence = 45;
+    appliedCap = 'Capped at 45% (Insufficient evidence limits score)';
+  } else if (verdict === 'partial' && confidence > 75) {
+    confidence = 75;
+    appliedCap = 'Capped at 75% (Partial support limits score)';
+  } else if ((verdict === 'supported' || verdict === 'contradicted') && distinctDomains < 2 && confidence > 70) {
+    confidence = 70;
+    appliedCap = 'Capped at 70% (Fewer than 2 distinct domains)';
   }
-
-  if (cappedConf > 95) {
-    cappedConf = 95;
+  if (confidence > 95) {
+    confidence = 95;
     appliedCap = 'Capped at 95% (Global confidence upper bound)';
   }
 
@@ -543,16 +413,17 @@ Respond ONLY with JSON containing "verdict", "confidence", "explanation", "missi
     claim: {
       id: `claim-${claimIndex}`,
       text: claimText,
-      verdict: finalVerdict,
-      confidence: Math.round(cappedConf) / 100, // Decimal 0..1
+      verdict,
+      confidence: Math.round(confidence) / 100,
       explanation: parsed.explanation.trim(),
       missingEvidence: parsed.missingEvidence.trim(),
       nextBestQuery: parsed.nextBestQuery.trim(),
+      searchQueries,
       evidence: verifiedEvidence,
       confidenceFactors: {
-        evidenceCount,
+        evidenceCount: verifiedEvidence.length,
         distinctDomains,
-        hasContradiction,
+        hasContradiction: verdict === 'contradicted' || verifiedEvidence.some((evidence) => evidence.stance === 'contradict'),
         appliedCap,
       },
     },
@@ -560,44 +431,23 @@ Respond ONLY with JSON containing "verdict", "confidence", "explanation", "missi
   };
 }
 
-/**
- * Stage 5: Synthesis with Gemini
- */
 export async function synthesizeReportWithGemini(
   query: string,
-  claims: Array<Omit<Claim, 'sourceIndependence' | 'claimBuildStatus'>>,
+  claims: Array<Pick<Claim, 'text' | 'verdict' | 'confidence' | 'explanation'>>,
   primaryKey: string,
   secondaryKey: string,
   modelName: string
 ): Promise<GeminiCallResult<string>> {
   const claimSummary = claims
-    .map(
-      (c) =>
-        `- Claim: "${c.text}"\n  Verdict: ${c.verdict.toUpperCase()} (Confidence: ${Math.round(c.confidence * 100)}%)\n  Explanation: ${c.explanation}`
-    )
+    .map((claim) => `- Claim: "${claim.text}"\n  Verdict: ${claim.verdict.toUpperCase()} (${Math.round(claim.confidence * 100)}%)\n  Explanation: ${claim.explanation}`)
     .join('\n\n');
-
-  const prompt = `You are a research synthesis agent.
-User Query / Audited Topic: "${query}"
-
-Verified Claims Summary:
-${claimSummary}
-
-Task: Write a concise 2–4 sentence executive summary of the research findings.
-Requirements:
-1. Acknowledge uncertainty and any contradictions in the evidence.
-2. Do NOT introduce any new facts or claims not listed above.
-Respond ONLY with a JSON object containing "summary".`;
-
+  const prompt = `You are a research synthesis agent.\nUser Query / Audited Topic: "${query}"\n\nVerified Claims:\n${claimSummary}\n\nWrite a concise 2–4 sentence executive summary. Acknowledge uncertainty and contradictions. Do not introduce facts not listed above. Return only JSON with summary.`;
   const responseSchema = {
     type: Type.OBJECT,
-    properties: {
-      summary: { type: Type.STRING },
-    },
+    properties: { summary: { type: Type.STRING } },
     required: ['summary'],
   };
-
-  const { data: parsed, usedFallback } = await callGeminiJson(
+  const { data, usedFallback } = await callGeminiJson(
     prompt,
     'synthesis',
     synthesisSchema,
@@ -606,6 +456,5 @@ Respond ONLY with a JSON object containing "summary".`;
     modelName,
     responseSchema
   );
-
-  return { data: parsed.summary, usedFallback };
+  return { data: data.summary, usedFallback };
 }

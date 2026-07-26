@@ -128,7 +128,31 @@ The current run can be downloaded from the result header:
 - `veritygraph-proof-report.md`
 - `veritygraph-proof-report.json`
 
-Exports include the query, workflow mode, build result, synthesis, metrics, claims, confidence factors, source-independence data, missing evidence, recommended next searches, and source URLs.
+Exports include the original input, workflow mode, build result, executive summary, stale-summary metadata, agent trace, reproducibility manifest, claims, audit anchors, search queries, confidence factors, source-independence data, missing evidence, recommended next searches, evidence grouped by stance, evidence basis, origin groups, and source URLs.
+
+## Audit quote anchoring
+
+Audit claims retain the copied `sourceQuote` and an `auditAnchor` that records exact, case-insensitive, whitespace-normalized, or unmatched alignment against the original answer. The original answer is never rewritten and model-provided offsets are never trusted.
+
+## Agent execution trace
+
+Each live run records six explicit stages: researcher, claim-decomposer, challenger, source-reader, verifier, and synthesizer. Audit mode marks researcher as skipped. Stage duration, counts, status, and sanitized notes are visible in the run and contain no prompts, keys, raw provider output, or request bodies.
+
+## Reproducibility manifest
+
+Runs carry a versioned manifest with the configured model, workflow mode, deterministic rule versions, stage durations, source/evidence counts, fallback usage, and the preserved support/challenge queries for every claim.
+
+## Targeted claim re-verification
+
+`POST /api/reverify` refreshes only one claim using its next-best, original support, and challenge queries. It returns a new claim, trace, fallback metadata, and manifest patch without rerunning decomposition, unrelated claims, or synthesis. The existing summary is marked stale instead of being silently regenerated.
+
+## Deterministic build rules
+
+Build status is calculated in shared code: contradicted or low-confidence insufficient claims fail; partial, higher-confidence insufficient, weakly supported, or single-origin claims warn; only high-confidence supported claims with at least two independent origins pass.
+
+## Source-independence limitations
+
+Canonical URLs, domains, normalized titles, and title-token Jaccard similarity group likely duplicates and syndicated coverage while keeping every source visible. These are reproducible heuristics, not a full citation graph or proof of editorial independence.
 
 ## Project structure
 
@@ -138,12 +162,15 @@ Exports include the query, workflow mode, build result, synthesis, metrics, clai
 │   ├── src/app/
 │   │   ├── api/health/       # Health route
 │   │   ├── api/research/     # Research and audit route handler
+│   │   ├── api/reverify/     # Targeted claim re-verification
 │   │   ├── globals.css       # VerityGraph design tokens and motion
 │   │   └── page.tsx          # Landing page, verifier, and results UI
 │   ├── src/lib/
 │   │   ├── gemini.ts         # Gemini extraction, verification, synthesis
+│   │   ├── quoteAnchoring.ts # Audit source-quote alignment
 │   │   ├── research.ts       # Six-stage verification pipeline
 │   │   ├── tavily.ts         # Tavily search and extraction helpers
+│   │   ├── verificationRules.ts # Shared deterministic rules
 │   │   └── types.ts          # Shared result contracts
 │   └── package.json
 ├── docs/
@@ -161,6 +188,7 @@ Run these from `frontend/`:
 | `npm run dev` | Start the local development server |
 | `npm run lint` | Run ESLint |
 | `npm run build` | Create a production build |
+| `npm run assert:engine` | Run deterministic quote, source-grouping, build-rule, metrics, and provider-fallback assertions |
 | `npm run start` | Serve the production build |
 
 ## Limitations

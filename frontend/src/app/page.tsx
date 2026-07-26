@@ -37,6 +37,7 @@ import {
   VerificationBuildStatus,
   WorkflowMode,
 } from '@/lib/types';
+import { calculateOverallBuildResult } from '@/lib/verificationRules';
 
 const STAGES = [
   'Searching sources',
@@ -141,6 +142,7 @@ export default function Home() {
   const [run, setRun] = useState<ResearchRun | null>(null);
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [whyOpen, setWhyOpen] = useState<Record<string, boolean>>({});
+  const [reverifying, setReverifying] = useState<Record<string, boolean>>({});
   const [copied, setCopied] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -203,9 +205,77 @@ export default function Home() {
     setTimeout(() => setCopied(null), 1600);
   };
 
+  const reverifyClaim = async (claim: Claim) => {
+    if (reverifying[claim.id]) return;
+    setReverifying((current) => ({ ...current, [claim.id]: true }));
+    setError(null);
+    try {
+      const response = await fetch('/api/reverify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          claimId: claim.id,
+          claimText: claim.text,
+          supportQuery: claim.searchQueries.support,
+          challengeQuery: claim.searchQueries.challenge,
+          nextBestQuery: claim.nextBestQuery,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setError({ message: data.error || 'Claim re-verification failed.', stage: data.stage || 'reverification' });
+        return;
+      }
+      const result = data as {
+        claim: Claim;
+        providerMetadata: { fallbackUsed: boolean };
+        trace: ResearchRun['agentTrace'];
+        manifestPatch: { generatedAt: string; evidenceCount: number; focusedExtractCount: number; snippetFallbackCount: number };
+      };
+      setRun((current) => {
+        if (!current) return current;
+        const claims = current.claims.map((item) => item.id === result.claim.id ? { ...result.claim, sourceQuote: item.sourceQuote, auditAnchor: item.auditAnchor } : item);
+        const evidence = claims.reduce((count, item) => count + item.evidence.length, 0);
+        const focused = claims.reduce((count, item) => count + item.evidence.filter((item) => item.evidenceBasis === 'focused-source-extract').length, 0);
+        const snippets = evidence - focused;
+        const reverifyDuration = result.trace.reduce((total, step) => total + step.durationMs, 0);
+        return {
+          ...current,
+          claims,
+          buildResult: calculateOverallBuildResult(claims),
+          providerMetadata: {
+            fallbackUsed: current.providerMetadata.fallbackUsed || result.providerMetadata.fallbackUsed,
+          },
+          agentTrace: [...current.agentTrace, ...result.trace],
+          manifest: {
+            ...current.manifest,
+            generatedAt: result.manifestPatch.generatedAt,
+            fallbackUsed: current.manifest.fallbackUsed || result.providerMetadata.fallbackUsed,
+            retainedEvidenceCount: evidence,
+            focusedExtractCount: focused,
+            snippetFallbackCount: snippets,
+            stageDurationsMs: {
+              ...current.manifest.stageDurationsMs,
+              reverification: reverifyDuration,
+            },
+          },
+          summaryMetadata: {
+            ...current.summaryMetadata,
+            stale: true,
+            staleReason: 'One or more claims were re-verified after this summary was generated.',
+          },
+        };
+      });
+    } catch {
+      setError({ message: 'Network error during claim re-verification.', stage: 'reverification' });
+    } finally {
+      setReverifying((current) => ({ ...current, [claim.id]: false }));
+    }
+  };
+
   const exportReport = (format: 'md' | 'json') => {
     if (!run) return;
-    const disclaimer = 'This report records retrieved evidence and automated verification. Confidence scores are heuristic and do not replace expert review.';
+    const disclaimer = 'This report records retrieved evidence and automated verification decisions. Confidence scores and source-independence groups are heuristic and do not represent certainty or replace expert review.';
     if (format === 'json') {
       const blob = new Blob([JSON.stringify({ reportType: 'VerityGraph Proof-Carrying Report', disclaimer, ...run }, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
@@ -214,26 +284,60 @@ export default function Home() {
       URL.revokeObjectURL(url);
       return;
     }
-    const claims = run.claims.map((claim, i) => [
-      `## Claim ${i + 1}: ${claim.text}`,
-      `- Verdict: ${claim.verdict}`,
-      `- Build status: ${claim.claimBuildStatus}`,
-      `- Confidence: ${pct(claim.confidence)}%`,
-      `- Source independence: ${claim.sourceIndependence.independentOrigins}/${claim.sourceIndependence.sourceCount} independent origins`,
-      `- Missing evidence: ${claim.missingEvidence}`,
-      `- Recommended next search: ${claim.nextBestQuery}`,
-      '',
-      ...claim.evidence.map((ev) => `- [${ev.stance}] ${ev.title} (${ev.url}) — ${ev.domain}; ${ev.evidenceBasis}; ${ev.originGroupId}\n  > ${ev.excerpt}`),
-    ].join('\n')).join('\n\n');
+
+    const trace = run.agentTrace
+      .map((step) => `- ${step.role}: ${step.label} — ${step.status}; ${step.durationMs}ms; ${step.note}`)
+      .join('\n');
+    const claims = run.claims.map((claim, index) => {
+      const evidenceByStance = (stance: EvidenceStance) => claim.evidence
+        .filter((evidence) => evidence.stance === stance)
+        .map((evidence) => `- [${evidence.title}](${evidence.url}) — ${evidence.domain}; ${evidence.evidenceBasis}; ${evidence.originGroupId}\n  > ${evidence.excerpt}`)
+        .join('\n') || '- None retained.';
+      return [
+        `## Claim ${index + 1}: ${claim.text}`,
+        `- Claim build status: ${claim.claimBuildStatus}`,
+        `- Verdict: ${claim.verdict}`,
+        `- Confidence: ${pct(claim.confidence)}%`,
+        `- Confidence factors: evidence=${claim.confidenceFactors.evidenceCount}; domains=${claim.confidenceFactors.distinctDomains}; contradiction=${claim.confidenceFactors.hasContradiction}; cap=${claim.confidenceFactors.appliedCap || 'none'}`,
+        `- Source independence: ${claim.sourceIndependence.independentOrigins}/${claim.sourceIndependence.sourceCount} independent origins; duplicate groups=${claim.sourceIndependence.duplicateGroups}; syndicated sources=${claim.sourceIndependence.syndicatedSourceCount}`,
+        `- Missing evidence: ${claim.missingEvidence}`,
+        `- Recommended next query: ${claim.nextBestQuery}`,
+        `- Support search query: ${claim.searchQueries.support}`,
+        `- Challenge search query: ${claim.searchQueries.challenge}`,
+        claim.auditAnchor ? `- Audit source quote: ${claim.auditAnchor.quote}\n- Audit quote match: ${claim.auditAnchor.matchStatus} (${claim.auditAnchor.startIndex ?? 'n/a'}–${claim.auditAnchor.endIndex ?? 'n/a'})` : '- Audit source quote: not applicable.',
+        '',
+        '### Support evidence',
+        evidenceByStance('support'),
+        '',
+        '### Contradicting evidence',
+        evidenceByStance('contradict'),
+        '',
+        '### Neutral evidence',
+        evidenceByStance('neutral'),
+      ].join('\n');
+    }).join('\n\n');
+
     const md = [
       '# VerityGraph Proof-Carrying Report',
       '',
-      `- Query: ${run.query}`,
       `- Workflow mode: ${run.workflowMode}`,
+      `- Original question or audited answer: ${run.query}`,
+      `- Build result: ${run.buildResult.status} — ${run.buildResult.headline}`,
       `- Created: ${run.createdAt}`,
-      `- Build status: ${run.buildResult.status} — ${run.buildResult.headline}`,
       '',
+      '## Executive summary',
       run.summary,
+      '',
+      '## Stale-summary disclosure',
+      run.summaryMetadata.stale ? `STALE: ${run.summaryMetadata.staleReason}` : 'Current: this summary was generated with the claims in this report.',
+      '',
+      '## Agent execution trace',
+      trace,
+      '',
+      '## Reproducibility manifest',
+      '```json',
+      JSON.stringify(run.manifest, null, 2),
+      '```',
       '',
       claims,
       '',
@@ -530,6 +634,40 @@ export default function Home() {
                 </div>
               </section>
             </div>
+
+            <section aria-labelledby="trace-title" className="rounded-xl p-5"
+                     style={{ background: 'var(--bg-raised)', border: '1px solid var(--border-subtle)' }}>
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                <h2 id="trace-title" className="text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--ink-3)', letterSpacing: '0.1em' }}>
+                  Agent execution trace
+                </h2>
+                <span className="text-[10px] font-mono" style={{ color: 'var(--ink-3)' }}>
+                  {run.manifest.pipelineVersion} · {run.manifest.model}
+                </span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                {run.agentTrace.map((step) => (
+                  <div key={`${step.id}-${step.role}`} className="rounded-md p-3" style={{ background: 'var(--bg-inset)', border: '1px solid var(--border-subtle)' }}>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-semibold" style={{ color: 'var(--ink)' }}>{step.role}</span>
+                      <span className="text-[10px] font-mono" style={{ color: step.status === 'fallback' ? 'var(--warn-text)' : 'var(--ink-3)' }}>{step.status} · {step.durationMs}ms</span>
+                    </div>
+                    <p className="text-[10px] mt-1" style={{ color: 'var(--ink-3)' }}>{step.note}</p>
+                  </div>
+                ))}
+              </div>
+              <details className="mt-3 pt-3" style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                <summary className="cursor-pointer text-[11px] font-semibold" style={{ color: 'var(--accent-text)' }}>
+                  Read reproducibility manifest
+                </summary>
+                <pre className="text-[10px] leading-relaxed mt-3 overflow-x-auto" style={{ color: 'var(--ink-2)' }}>{JSON.stringify(run.manifest, null, 2)}</pre>
+              </details>
+              {run.summaryMetadata.stale && (
+                <p className="text-[11px] mt-3" style={{ color: 'var(--warn-text)' }}>
+                  Stale summary: {run.summaryMetadata.staleReason}
+                </p>
+              )}
+            </section>
           </div>
         )}
 
@@ -565,6 +703,15 @@ export default function Home() {
                         {claimDigestText(claim)}
                       </p>
 
+                      {claim.auditAnchor && (
+                        <div className="rounded-md p-2.5 mt-3 text-[11px]" style={{ background: 'var(--bg-inset)', border: '1px solid var(--border-subtle)' }}>
+                          <span className="font-mono" style={{ color: claim.auditAnchor.matchStatus === 'unmatched' ? 'var(--bad-text)' : 'var(--accent-text)' }}>
+                            Answer anchor · {claim.auditAnchor.matchStatus}
+                          </span>
+                          <p className="mt-1 italic" style={{ color: 'var(--ink-2)' }}>&ldquo;{claim.auditAnchor.quote}&rdquo;</p>
+                        </div>
+                      )}
+
                       <div className="flex flex-wrap items-center gap-2 mt-3">
                         <button type="button" onClick={() => toggleWhy(claim.id)} aria-expanded={isWhy} aria-controls={`reasoning-${claim.id}`}
                           className="inline-flex min-h-11 items-center gap-1 text-[11px] font-semibold tr rounded px-2"
@@ -575,6 +722,11 @@ export default function Home() {
                           className="inline-flex min-h-11 items-center gap-1 text-[11px] font-semibold tr rounded px-2"
                           style={{ color: 'var(--ink-2)', background: 'var(--bg-overlay)', border: '1px solid var(--border-subtle)' }}>
                           {isOpen ? <><ChevronUp className="w-3 h-3" /> Hide the evidence</> : <><ChevronDown className="w-3 h-3" /> Read the evidence ({claim.evidence.length})</>}
+                        </button>
+                        <button type="button" onClick={() => void reverifyClaim(claim)} disabled={reverifying[claim.id]}
+                          className="inline-flex min-h-11 items-center gap-1 text-[11px] font-semibold tr rounded px-2 disabled:opacity-40"
+                          style={{ color: 'var(--accent-text)', background: 'var(--accent-dim)' }}>
+                          <RefreshCw className={`w-3 h-3 ${reverifying[claim.id] ? 'animate-spin' : ''}`} /> {reverifying[claim.id] ? 'Re-verifying' : 'Re-verify claim'}
                         </button>
                       </div>
 
