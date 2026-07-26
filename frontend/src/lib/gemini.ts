@@ -203,14 +203,14 @@ async function callGeminiJson<T>(
         const data = await tryCall(secondaryKey);
         return { data, usedFallback: true };
       } catch {
-        // Pause 10s and retry primary key
-        await new Promise((resolve) => setTimeout(resolve, 10000));
+        // Pause 20s and retry primary key
+        await new Promise((resolve) => setTimeout(resolve, 20000));
         try {
           const data = await tryCall(primaryKey);
           return { data, usedFallback: false };
         } catch {
-          // Pause 10s and retry secondary key final time
-          await new Promise((resolve) => setTimeout(resolve, 10000));
+          // Pause 20s and retry secondary key final time
+          await new Promise((resolve) => setTimeout(resolve, 20000));
           try {
             const data = await tryCall(secondaryKey);
             return { data, usedFallback: true };
