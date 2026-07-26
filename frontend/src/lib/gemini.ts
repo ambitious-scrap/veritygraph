@@ -8,6 +8,7 @@ import {
   EvidenceStance,
   PipelineError,
   PipelineStage,
+  WorkflowMode,
 } from './types';
 
 export interface ExtractedClaim {
@@ -31,6 +32,22 @@ interface CategorizedError {
   message: string;
 }
 
+const openRouterCompletionSchema = z.object({
+  choices: z
+    .array(
+      z.object({
+        message: z.object({
+          content: z.string().nullable().optional(),
+        }),
+      })
+    )
+    .optional()
+    .default([]),
+});
+
+const GEMINI_TIMEOUT_MS = 20000;
+
+// Strict Zod Schemas
 const claimExtractionSchema = z
   .array(
     z.object({
@@ -46,6 +63,8 @@ const rawVerificationSchema = z
     verdict: z.enum(['supported', 'contradicted', 'partial', 'insufficient']),
     confidence: z.number().min(0).max(100),
     explanation: z.string().min(10).max(800),
+    missingEvidence: z.string().min(10).max(400),
+    nextBestQuery: z.string().min(3).max(250),
     evidence: z
       .array(
         z
@@ -66,21 +85,6 @@ const synthesisSchema = z
   })
   .strict();
 
-const openRouterCompletionSchema = z.object({
-  choices: z
-    .array(
-      z.object({
-        message: z.object({
-          content: z.string().nullable().optional(),
-        }),
-      })
-    )
-    .optional()
-    .default([]),
-});
-
-const GEMINI_TIMEOUT_MS = 20000;
-
 /**
  * Promise-based 20-second timeout wrapper for Gemini calls
  */
@@ -95,7 +99,7 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs = GEMINI_TIMEOUT_MS): Pro
   });
 
   return Promise.race([promise, timeoutPromise]).finally(() => {
-    clearTimeout(timeoutId);
+    clearTimeout(timeoutId!);
   });
 }
 
@@ -132,29 +136,22 @@ function classifyError(error: unknown): CategorizedError {
     lowerMsg.includes('network') ||
     lowerMsg.includes('fetch failed') ||
     lowerMsg.includes('econnreset') ||
-    lowerMsg.includes('etimedout')
+    lowerMsg.includes('etimedout') ||
+    lowerMsg.includes('openrouter')
   ) {
     return { kind: 'retryable-provider', message: 'Provider temporary unavailability or rate limit' };
   }
 
   if (
-    name === 'TimeoutError' ||
-    lowerMsg.includes('429') ||
-    lowerMsg.includes('500') ||
-    lowerMsg.includes('502') ||
-    lowerMsg.includes('503') ||
-    lowerMsg.includes('quota') ||
-    lowerMsg.includes('rate limit') ||
-    lowerMsg.includes('resource_exhausted') ||
-    lowerMsg.includes('overloaded') ||
-    lowerMsg.includes('unavailable') ||
-    lowerMsg.includes('network') ||
-    lowerMsg.includes('fetch failed') ||
-    lowerMsg.includes('econnreset') ||
-    lowerMsg.includes('etimedout') ||
-    lowerMsg.includes('openrouter')
+    lowerMsg.includes('400') ||
+    lowerMsg.includes('401') ||
+    lowerMsg.includes('403') ||
+    lowerMsg.includes('404') ||
+    lowerMsg.includes('invalid model') ||
+    lowerMsg.includes('not found') ||
+    lowerMsg.includes('key not valid')
   ) {
-    return { kind: 'retryable-provider', message: 'Provider temporary unavailability or rate limit' };
+    return { kind: 'non-retryable-provider', message: 'Invalid model configuration or key permissions' };
   }
 
   return { kind: 'invalid-output', message: msg || 'Model output processing failure' };
@@ -180,6 +177,7 @@ async function callGeminiJson<T>(
         ? modelName
         : 'google/gemini-2.5-flash';
       const resPromise = fetchWithTimeout('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
         headers: {
           Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
@@ -216,6 +214,7 @@ async function callGeminiJson<T>(
       const response = await withTimeout(apiPromise);
       text = response.text || '';
     }
+
     if (!text.trim()) {
       throw { kind: 'invalid-output', message: 'Empty model response text' } as CategorizedError;
     }
@@ -284,17 +283,32 @@ async function callGeminiJson<T>(
 }
 
 /**
- * Stage 2: Claim Extraction with Gemini
+ * Stage 2: Claim Extraction with Gemini (Supports Research & Audit modes)
  */
 export async function extractClaimsWithGemini(
-  query: string,
+  inputQueryOrText: string,
   sources: RawSource[],
+  workflowMode: WorkflowMode,
   primaryKey: string,
   secondaryKey: string,
   modelName: string
 ): Promise<GeminiCallResult<ExtractedClaim[]>> {
-  const prompt = `You are a scientific fact-verification system.
-User Query: "${query}"
+  const prompt =
+    workflowMode === 'audit'
+      ? `You are an AI answer verification compiler.
+Pasted AI Answer to Audit:
+"""
+${inputQueryOrText}
+"""
+
+Instructions:
+1. Extract EXACTLY 3 important, factual, check-worthy atomic claims derived ONLY from the pasted AI answer above.
+2. Do NOT add claims not present in the answer.
+3. Prioritize factual, check-worthy claims. Ignore opinions, recommendations, and rhetorical statements.
+4. For each claim, generate a target search query to find supporting evidence (supportQuery) and a target search query to find challenging/opposing evidence (challengeQuery).
+5. Return EXACTLY 3 unique atomic claims in JSON matching the schema.`
+      : `You are a scientific fact-verification system.
+User Query: "${inputQueryOrText}"
 
 Initial Sources:
 ${
@@ -349,7 +363,7 @@ Respond ONLY with a JSON array of EXACTLY 3 objects matching the schema.`;
 }
 
 /**
- * Stage 4: Claim Verification with Gemini
+ * Stage 4: Claim Verification with Gemini (includes missingEvidence and nextBestQuery)
  */
 export async function verifyClaimWithGemini(
   claimText: string,
@@ -358,7 +372,10 @@ export async function verifyClaimWithGemini(
   primaryKey: string,
   secondaryKey: string,
   modelName: string
-): Promise<{ claim: Claim; usedFallback: boolean }> {
+): Promise<{
+  claim: Omit<Claim, 'sourceIndependence' | 'claimBuildStatus'>;
+  usedFallback: boolean;
+}> {
   const sourcesList = candidateEvidence
     .map(
       (e) =>
@@ -376,8 +393,10 @@ Instructions:
 Evaluate the claim ONLY using the supplied evidence sources above.
 1. Determine verdict: "supported", "contradicted", "partial", or "insufficient".
 2. Assign a confidence score from 0 to 100.
-3. Provide a concise 1-2 sentence explanation of the reasoning.
-4. List the evidence sources evaluated. Each item in the "evidence" array MUST contain: "sourceId" (exact source ID string like c1-ev-s-1), "stance" ("support", "contradict", or "neutral"), and "relevanceScore" (number 0 to 100).
+3. Provide a concise 1-2 sentence explanation of the reasoning (10 to 800 chars).
+4. Provide missingEvidence: Describe the specific evidence needed to strengthen or reverse the verdict (10 to 400 chars). Do not claim that the missing evidence exists. Do not introduce new factual claims.
+5. Provide nextBestQuery: A focused search query for obtaining that missing evidence (3 to 250 chars).
+6. List the evidence sources evaluated. Each item in the "evidence" array MUST contain: "sourceId" (exact source ID string like c1-ev-s-1), "stance" ("support", "contradict", or "neutral"), and "relevanceScore" (number 0 to 100).
 
 Guidelines:
 * A support candidate is not automatically supporting evidence.
@@ -385,7 +404,7 @@ Guidelines:
 * Search snippets may contain less context than full-source extracts.
 * Evaluate only the supplied passage; do not infer claims from the title alone.
 * Return only supplied source IDs.
-Respond ONLY with JSON containing "verdict", "confidence", "explanation", and "evidence" array.`;
+Respond ONLY with JSON containing "verdict", "confidence", "explanation", "missingEvidence", "nextBestQuery", and "evidence" array.`;
 
   const verificationResponseSchema = {
     type: Type.OBJECT,
@@ -396,6 +415,8 @@ Respond ONLY with JSON containing "verdict", "confidence", "explanation", and "e
       },
       confidence: { type: Type.NUMBER },
       explanation: { type: Type.STRING },
+      missingEvidence: { type: Type.STRING },
+      nextBestQuery: { type: Type.STRING },
       evidence: {
         type: Type.ARRAY,
         items: {
@@ -412,7 +433,14 @@ Respond ONLY with JSON containing "verdict", "confidence", "explanation", and "e
         },
       },
     },
-    required: ['verdict', 'confidence', 'explanation', 'evidence'],
+    required: [
+      'verdict',
+      'confidence',
+      'explanation',
+      'missingEvidence',
+      'nextBestQuery',
+      'evidence',
+    ],
   };
 
   const { data: parsed, usedFallback } = await callGeminiJson(
@@ -465,6 +493,7 @@ Respond ONLY with JSON containing "verdict", "confidence", "explanation", and "e
       stance,
       relevanceScore: Math.round(rawEv.relevanceScore) / 100, // Decimal 0..1
       evidenceBasis: candidate.evidenceBasis,
+      originGroupId: 'Group A', // Will be populated by analyzeSourceIndependence in research.ts
     });
   }
 
@@ -474,6 +503,7 @@ Respond ONLY with JSON containing "verdict", "confidence", "explanation", and "e
     finalVerdict = 'insufficient';
   }
 
+  const conf = Math.max(0, Math.min(100, parsed.confidence));
   const evidenceCount = verifiedEvidence.length;
   const distinctDomains = new Set(verifiedEvidence.map((e) => e.domain)).size;
   const hasContradiction =
@@ -481,7 +511,7 @@ Respond ONLY with JSON containing "verdict", "confidence", "explanation", and "e
     verifiedEvidence.some((e) => e.stance === 'contradict');
 
   // Deterministic Confidence Caps:
-  let cappedConf = parsed.confidence;
+  let cappedConf = conf;
   let appliedCap: string | null = null;
 
   if (finalVerdict === 'insufficient') {
@@ -515,7 +545,9 @@ Respond ONLY with JSON containing "verdict", "confidence", "explanation", and "e
       text: claimText,
       verdict: finalVerdict,
       confidence: Math.round(cappedConf) / 100, // Decimal 0..1
-      explanation: parsed.explanation,
+      explanation: parsed.explanation.trim(),
+      missingEvidence: parsed.missingEvidence.trim(),
+      nextBestQuery: parsed.nextBestQuery.trim(),
       evidence: verifiedEvidence,
       confidenceFactors: {
         evidenceCount,
@@ -533,7 +565,7 @@ Respond ONLY with JSON containing "verdict", "confidence", "explanation", and "e
  */
 export async function synthesizeReportWithGemini(
   query: string,
-  claims: Claim[],
+  claims: Array<Omit<Claim, 'sourceIndependence' | 'claimBuildStatus'>>,
   primaryKey: string,
   secondaryKey: string,
   modelName: string
@@ -546,7 +578,7 @@ export async function synthesizeReportWithGemini(
     .join('\n\n');
 
   const prompt = `You are a research synthesis agent.
-User Query: "${query}"
+User Query / Audited Topic: "${query}"
 
 Verified Claims Summary:
 ${claimSummary}

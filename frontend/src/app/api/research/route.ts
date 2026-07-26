@@ -12,11 +12,9 @@ const NO_CACHE_HEADERS = {
 };
 
 const requestSchema = z.object({
-  query: z
-    .string({ message: 'Query is required' })
-    .transform((val) => val.trim())
-    .refine((val) => val.length >= 10, 'Query must be at least 10 characters long')
-    .refine((val) => val.length <= 500, 'Query must be at most 500 characters long'),
+  mode: z.enum(['research', 'audit']).optional().default('research'),
+  query: z.string().optional(),
+  text: z.string().optional(),
 });
 
 export async function POST(req: Request) {
@@ -35,14 +33,73 @@ export async function POST(req: Request) {
 
     if (!parsed.success) {
       const errorMessage =
-        parsed.error.issues[0]?.message || 'Invalid query parameter.';
+        parsed.error.issues[0]?.message || 'Invalid request parameters.';
       return NextResponse.json(
         { error: errorMessage, stage: 'initial-search' },
         { status: 400, headers: NO_CACHE_HEADERS }
       );
     }
 
-    const { run, usedFallback } = await runResearchPipeline(parsed.data.query);
+    const mode = parsed.data.mode;
+    const inputText = (parsed.data.text || parsed.data.query || '').trim();
+
+    if (mode === 'audit') {
+      if (!inputText) {
+        return NextResponse.json(
+          { error: 'AI answer text is required for Audit Mode.', stage: 'claim-extraction' },
+          { status: 400, headers: NO_CACHE_HEADERS }
+        );
+      }
+      if (inputText.length < 100) {
+        return NextResponse.json(
+          {
+            error: 'AI answer text must be at least 100 characters long.',
+            stage: 'claim-extraction',
+          },
+          { status: 400, headers: NO_CACHE_HEADERS }
+        );
+      }
+      if (inputText.length > 6000) {
+        return NextResponse.json(
+          {
+            error: 'AI answer text must be at most 6,000 characters long.',
+            stage: 'claim-extraction',
+          },
+          { status: 400, headers: NO_CACHE_HEADERS }
+        );
+      }
+    } else {
+      if (!inputText) {
+        return NextResponse.json(
+          { error: 'Research query is required.', stage: 'initial-search' },
+          { status: 400, headers: NO_CACHE_HEADERS }
+        );
+      }
+      if (inputText.length < 10) {
+        return NextResponse.json(
+          {
+            error: 'Research query must be at least 10 characters long.',
+            stage: 'initial-search',
+          },
+          { status: 400, headers: NO_CACHE_HEADERS }
+        );
+      }
+      if (inputText.length > 500) {
+        return NextResponse.json(
+          {
+            error: 'Research query must be at most 500 characters long.',
+            stage: 'initial-search',
+          },
+          { status: 400, headers: NO_CACHE_HEADERS }
+        );
+      }
+    }
+
+    const { run, usedFallback } = await runResearchPipeline({
+      mode,
+      query: mode === 'research' ? inputText : undefined,
+      text: mode === 'audit' ? inputText : undefined,
+    });
 
     return NextResponse.json(run, {
       status: 200,
@@ -61,7 +118,7 @@ export async function POST(req: Request) {
 
     return NextResponse.json(
       {
-        error: 'An unexpected pipeline error occurred during research verification.',
+        error: 'An unexpected pipeline error occurred during verification.',
         stage: 'initial-search',
       },
       { status: 500, headers: NO_CACHE_HEADERS }
