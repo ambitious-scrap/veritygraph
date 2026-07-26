@@ -31,18 +31,13 @@ interface CategorizedError {
   message: string;
 }
 
-const GEMINI_TIMEOUT_MS = 20000;
-
-// Strict Zod Schemas
 const claimExtractionSchema = z
   .array(
-    z
-      .object({
-        text: z.string().min(10).max(500),
-        supportQuery: z.string().min(3).max(300),
-        challengeQuery: z.string().min(3).max(300),
-      })
-      .strict()
+    z.object({
+      text: z.string().transform((s) => s.replace(/\s+/g, ' ').trim()),
+      supportQuery: z.string().transform((s) => s.replace(/\s+/g, ' ').trim()),
+      challengeQuery: z.string().transform((s) => s.replace(/\s+/g, ' ').trim()),
+    })
   )
   .length(3);
 
@@ -70,6 +65,7 @@ const synthesisSchema = z
     summary: z.string().min(40).max(1200),
   })
   .strict();
+const GEMINI_TIMEOUT_MS = 20000;
 
 /**
  * Promise-based 20-second timeout wrapper for Gemini calls
