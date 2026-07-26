@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { PipelineError } from './types';
+import { EvidenceBasis, PipelineError } from './types';
 
 const FETCH_TIMEOUT_MS = 15000;
 
@@ -13,6 +13,8 @@ export interface RawSource {
 
 export interface CandidateEvidence extends RawSource {
   candidateType: 'support-candidate' | 'challenge-candidate';
+  evidenceBasis: EvidenceBasis;
+  extractedText?: string;
 }
 
 const tavilyResultSchema = z.object({
@@ -23,6 +25,15 @@ const tavilyResultSchema = z.object({
 
 const tavilyResponseSchema = z.object({
   results: z.array(tavilyResultSchema).optional().default([]),
+});
+
+const tavilyExtractResultSchema = z.object({
+  url: z.string(),
+  raw_content: z.string().optional().default(''),
+});
+
+const tavilyExtractResponseSchema = z.object({
+  results: z.array(tavilyExtractResultSchema).optional().default([]),
 });
 
 export async function fetchWithTimeout(
@@ -206,6 +217,7 @@ export async function searchClaimEvidence(
       domain: extractDomain(item.url),
       excerpt: item.content || item.title,
       candidateType,
+      evidenceBasis: 'search-snippet',
     }));
   };
 
@@ -226,4 +238,128 @@ export async function searchClaimEvidence(
   }
 
   return deduplicated;
+}
+
+/**
+ * Helper to select up to 4 candidate URLs per claim (max 2 support, max 2 challenge, prefer distinct domains)
+ */
+function selectTargetExtractionCandidates(
+  candidates: CandidateEvidence[]
+): CandidateEvidence[] {
+  const selectUpToTwo = (list: CandidateEvidence[]): CandidateEvidence[] => {
+    if (list.length <= 2) return list;
+
+    // Prefer distinct domains
+    const result: CandidateEvidence[] = [];
+    const seenDomains = new Set<string>();
+
+    // First pass: distinct domains
+    for (const c of list) {
+      if (!seenDomains.has(c.domain)) {
+        seenDomains.add(c.domain);
+        result.push(c);
+        if (result.length === 2) break;
+      }
+    }
+
+    // Second pass: fill if < 2
+    if (result.length < 2) {
+      for (const c of list) {
+        if (!result.includes(c)) {
+          result.push(c);
+          if (result.length === 2) break;
+        }
+      }
+    }
+
+    return result;
+  };
+
+  const supportList = candidates.filter(
+    (c) => c.candidateType === 'support-candidate'
+  );
+  const challengeList = candidates.filter(
+    (c) => c.candidateType === 'challenge-candidate'
+  );
+
+  const selectedSupport = selectUpToTwo(supportList);
+  const selectedChallenge = selectUpToTwo(challengeList);
+
+  return [...selectedSupport, ...selectedChallenge];
+}
+
+/**
+ * Stage 4: Focused Evidence Extraction via Tavily Extract (with graceful fallback to search snippets)
+ */
+export async function extractFocusedEvidence(
+  claimText: string,
+  candidates: CandidateEvidence[],
+  apiKey: string
+): Promise<CandidateEvidence[]> {
+  const selectedCandidates = selectTargetExtractionCandidates(candidates);
+  const selectedUrls = selectedCandidates.map((c) => c.url);
+
+  // If no URLs selected, return original candidates with snippet basis
+  if (selectedUrls.length === 0) {
+    return candidates.map((c) => ({
+      ...c,
+      evidenceBasis: 'search-snippet',
+    }));
+  }
+
+  // Execute Tavily Extract with 15s timeout
+  const extractMap = new Map<string, string>(); // canonicalUrl -> extractedText
+
+  try {
+    const res = await fetchWithTimeout('https://api.tavily.com/extract', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        api_key: apiKey,
+        urls: selectedUrls,
+        query: claimText,
+        chunks_per_source: 2,
+        extract_depth: 'basic',
+        format: 'text',
+        timeout: 15,
+      }),
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      const parsed = tavilyExtractResponseSchema.safeParse(data);
+      if (parsed.success) {
+        for (const item of parsed.data.results) {
+          const rawText = item.raw_content || '';
+          const normalized = rawText.replace(/\s+/g, ' ').trim();
+          if (normalized.length > 0) {
+            extractMap.set(normalizeUrl(item.url), normalized.slice(0, 1500));
+          }
+        }
+      }
+    }
+  } catch {
+    // Graceful Fallback: Extraction failures MUST NOT terminate the pipeline.
+    // Continue using search snippets seamlessly.
+  }
+
+  // Update candidate evidence objects
+  return candidates.map((c) => {
+    const canonical = normalizeUrl(c.url);
+    const extracted = extractMap.get(canonical);
+
+    if (extracted) {
+      return {
+        ...c,
+        excerpt: extracted,
+        extractedText: extracted,
+        evidenceBasis: 'full-source-extract',
+      };
+    }
+
+    return {
+      ...c,
+      evidenceBasis: 'search-snippet',
+    };
+  });
 }

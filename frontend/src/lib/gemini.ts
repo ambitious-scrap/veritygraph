@@ -299,7 +299,7 @@ export async function verifyClaimWithGemini(
   const sourcesList = candidateEvidence
     .map(
       (e) =>
-        `[Source ID: ${e.id}] (Candidate Type: ${e.candidateType})\nTitle: ${e.title}\nDomain: ${e.domain}\nExcerpt: ${e.excerpt}`
+        `[Source ID: ${e.id}]\nCandidate Type: ${e.candidateType}\nEvidence Basis: ${e.evidenceBasis === 'full-source-extract' ? 'Full source extract' : 'Search snippet'}\nTitle: ${e.title}\nDomain: ${e.domain}\nPassage: ${e.excerpt}`
     )
     .join('\n\n');
 
@@ -315,8 +315,13 @@ Evaluate the claim ONLY using the supplied evidence sources above.
 2. Assign a confidence score from 0 to 100.
 3. Provide a concise 1-2 sentence explanation of the reasoning.
 4. List the evidence sources evaluated. Each item in the "evidence" array MUST contain: "sourceId" (exact source ID string like c1-ev-s-1), "stance" ("support", "contradict", or "neutral"), and "relevanceScore" (number 0 to 100).
-Do not assume a challenge candidate source is automatically contradictory; classify its actual stance.
-Do not reference any source ID that is not listed in the retrieved evidence sources above.
+
+Guidelines:
+* A support candidate is not automatically supporting evidence.
+* A challenge candidate is not automatically contradictory evidence.
+* Search snippets may contain less context than full-source extracts.
+* Evaluate only the supplied passage; do not infer claims from the title alone.
+* Return only supplied source IDs.
 Respond ONLY with JSON containing "verdict", "confidence", "explanation", and "evidence" array.`;
 
   const verificationResponseSchema = {
@@ -396,6 +401,7 @@ Respond ONLY with JSON containing "verdict", "confidence", "explanation", and "e
       excerpt: candidate.excerpt,
       stance,
       relevanceScore: Math.round(rawEv.relevanceScore) / 100, // Decimal 0..1
+      evidenceBasis: candidate.evidenceBasis,
     });
   }
 

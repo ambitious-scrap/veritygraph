@@ -2,6 +2,8 @@ export type ClaimVerdict = 'supported' | 'contradicted' | 'partial' | 'insuffici
 
 export type EvidenceStance = 'support' | 'contradict' | 'neutral';
 
+export type EvidenceBasis = 'full-source-extract' | 'search-snippet';
+
 export interface Evidence {
   id: string;
   title: string;
@@ -10,6 +12,7 @@ export interface Evidence {
   excerpt: string;
   stance: EvidenceStance;
   relevanceScore: number;
+  evidenceBasis: EvidenceBasis;
 }
 
 export interface ConfidenceFactors {
@@ -32,6 +35,8 @@ export interface Claim {
 export interface ResearchMetrics {
   durationMs: number;
   sourcesScanned: number;
+  extractedSources: number;
+  snippetFallbackSources: number;
   distinctDomains: number;
   supportedClaims: number;
   challengedClaims: number;
@@ -57,6 +62,7 @@ export type PipelineStage =
   | 'initial-search'
   | 'claim-extraction'
   | 'evidence-search'
+  | 'focused-extraction'
   | 'verification'
   | 'synthesis';
 

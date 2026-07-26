@@ -23,14 +23,22 @@ import {
   Sparkles,
   ArrowRight,
   KeyRound,
+  FileCode,
 } from 'lucide-react';
 import { MOCK_RESEARCH_RUN } from '@/lib/mockData';
-import { Claim, ClaimVerdict, EvidenceStance, ResearchRun } from '@/lib/types';
+import {
+  Claim,
+  ClaimVerdict,
+  EvidenceBasis,
+  EvidenceStance,
+  ResearchRun,
+} from '@/lib/types';
 
 const STAGES = [
   'Searching sources',
   'Extracting claims',
   'Challenging claims',
+  'Reading source pages',
   'Verifying evidence',
   'Compiling report',
 ];
@@ -220,6 +228,23 @@ export default function Home() {
     }
   };
 
+  const getEvidenceBasisBadge = (basis: EvidenceBasis) => {
+    if (basis === 'full-source-extract') {
+      return (
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200">
+          <FileText className="w-3 h-3 text-blue-500" aria-hidden="true" />
+          Full source extract
+        </span>
+      );
+    }
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-200">
+        <FileCode className="w-3 h-3 text-slate-500" aria-hidden="true" />
+        Search snippet
+      </span>
+    );
+  };
+
   const totalClaims = activeRun?.claims.length || 0;
   const supportedCount =
     activeRun?.claims.filter((c) => c.verdict === 'supported').length || 0;
@@ -388,7 +413,7 @@ export default function Home() {
                 Evidence-First Multi-Agent Research System
               </h2>
               <p className="text-xs text-slate-600 leading-relaxed">
-                VerityGraph extracts atomic claims, searches scientific literature via Tavily, and evaluates supporting and challenging evidence using Google Gemini.
+                VerityGraph extracts atomic claims, searches scientific literature via Tavily, extracts focused source passages, and evaluates supporting and challenging evidence using Google Gemini.
               </p>
             </div>
 
@@ -481,6 +506,24 @@ export default function Home() {
                     </span>
                     <span className="text-lg font-bold text-slate-900">
                       {activeRun.metrics?.distinctDomains ?? 0}
+                    </span>
+                  </div>
+                  <div className="p-3 bg-blue-50/50 border border-blue-200 rounded-lg">
+                    <span className="block text-xs font-medium text-blue-800 inline-flex items-center gap-1">
+                      <FileText className="w-3 h-3 text-blue-600" aria-hidden="true" />
+                      Full Extracted
+                    </span>
+                    <span className="text-lg font-bold text-blue-900">
+                      {activeRun.metrics?.extractedSources ?? 0}
+                    </span>
+                  </div>
+                  <div className="p-3 bg-slate-100/70 border border-slate-300 rounded-lg">
+                    <span className="block text-xs font-medium text-slate-700 inline-flex items-center gap-1">
+                      <FileCode className="w-3 h-3 text-slate-500" aria-hidden="true" />
+                      Snippet Fallbacks
+                    </span>
+                    <span className="text-lg font-bold text-slate-900">
+                      {activeRun.metrics?.snippetFallbackSources ?? 0}
                     </span>
                   </div>
                   <div className="p-3 bg-emerald-50/50 border border-emerald-200 rounded-lg">
@@ -651,6 +694,7 @@ export default function Home() {
                                     <div className="flex flex-wrap items-center justify-between gap-2">
                                       <div className="flex flex-wrap items-center gap-2">
                                         {getEvidenceStanceBadge(ev.stance)}
+                                        {getEvidenceBasisBadge(ev.evidenceBasis)}
                                         <a
                                           href={ev.url}
                                           target="_blank"
@@ -693,7 +737,7 @@ export default function Home() {
       <footer className="border-t border-slate-200 bg-white py-4 mt-auto">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 flex items-center justify-between text-xs text-slate-500">
           <span>VerityGraph MVP — Evidence-First Multi-Agent Research System</span>
-          <span>Google Gemini Live Engine</span>
+          <span>Google Gemini & Tavily Extract Engine</span>
         </div>
       </footer>
     </div>
