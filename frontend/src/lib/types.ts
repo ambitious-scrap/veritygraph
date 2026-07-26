@@ -2,7 +2,7 @@ export type ClaimVerdict = 'supported' | 'contradicted' | 'partial' | 'insuffici
 
 export type EvidenceStance = 'support' | 'contradict' | 'neutral';
 
-export type EvidenceBasis = 'full-source-extract' | 'search-snippet';
+export type EvidenceBasis = 'focused-source-extract' | 'search-snippet';
 
 export interface Evidence {
   id: string;

@@ -229,11 +229,11 @@ export default function Home() {
   };
 
   const getEvidenceBasisBadge = (basis: EvidenceBasis) => {
-    if (basis === 'full-source-extract') {
+    if (basis === 'focused-source-extract') {
       return (
         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200">
           <FileText className="w-3 h-3 text-blue-500" aria-hidden="true" />
-          Full source extract
+          Focused source extract
         </span>
       );
     }

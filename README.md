@@ -59,7 +59,7 @@ TAVILY_API_KEY=your_tavily_api_key
 ## Live vs. Demo Mode
 
 - **Live Research (`mode: "live"`):** Submits research query to `POST /api/research`, running the full 6-stage verification engine. Displays a "Live Research" badge. If primary key failover occurred, displays a "Secondary Gemini key used" badge.
-- **Demo Mode (`mode: "demo"`):** Click **"Load Demo Result"** to instantly inspect pre-evaluated, deterministic claim-verification data with full-source extracts and search snippet fallbacks for coffee mortality literature without making API calls. Displays a "Demo Data" badge.
+- **Demo Mode (`mode: "demo"`):** Click **"Load Demo Result"** to instantly inspect pre-evaluated, deterministic claim-verification data with focused-source extracts and search snippet fallbacks for coffee mortality literature without making API calls. Displays a "Demo Data" badge.
 
 ---
 

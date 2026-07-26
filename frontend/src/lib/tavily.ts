@@ -353,7 +353,7 @@ export async function extractFocusedEvidence(
         ...c,
         excerpt: extracted,
         extractedText: extracted,
-        evidenceBasis: 'full-source-extract',
+        evidenceBasis: 'focused-source-extract',
       };
     }
 

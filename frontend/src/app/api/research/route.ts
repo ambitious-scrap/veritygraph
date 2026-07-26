@@ -3,6 +3,14 @@ import { z } from 'zod';
 import { runResearchPipeline } from '@/lib/research';
 import { PipelineError } from '@/lib/types';
 
+export const runtime = 'nodejs';
+export const maxDuration = 60;
+export const dynamic = 'force-dynamic';
+
+const NO_CACHE_HEADERS = {
+  'Cache-Control': 'no-store',
+};
+
 const requestSchema = z.object({
   query: z
     .string({ message: 'Query is required' })
@@ -19,7 +27,7 @@ export async function POST(req: Request) {
     } catch {
       return NextResponse.json(
         { error: 'Invalid JSON payload in request body.', stage: 'initial-search' },
-        { status: 400 }
+        { status: 400, headers: NO_CACHE_HEADERS }
       );
     }
 
@@ -30,7 +38,7 @@ export async function POST(req: Request) {
         parsed.error.issues[0]?.message || 'Invalid query parameter.';
       return NextResponse.json(
         { error: errorMessage, stage: 'initial-search' },
-        { status: 400 }
+        { status: 400, headers: NO_CACHE_HEADERS }
       );
     }
 
@@ -39,6 +47,7 @@ export async function POST(req: Request) {
     return NextResponse.json(run, {
       status: 200,
       headers: {
+        'Cache-Control': 'no-store',
         'X-Gemini-Fallback-Used': usedFallback ? 'true' : 'false',
       },
     });
@@ -46,7 +55,7 @@ export async function POST(req: Request) {
     if (error instanceof PipelineError) {
       return NextResponse.json(
         { error: error.safeMessage, stage: error.stage },
-        { status: 500 }
+        { status: 500, headers: NO_CACHE_HEADERS }
       );
     }
 
@@ -55,7 +64,7 @@ export async function POST(req: Request) {
         error: 'An unexpected pipeline error occurred during research verification.',
         stage: 'initial-search',
       },
-      { status: 500 }
+      { status: 500, headers: NO_CACHE_HEADERS }
     );
   }
 }

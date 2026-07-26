@@ -299,7 +299,7 @@ export async function verifyClaimWithGemini(
   const sourcesList = candidateEvidence
     .map(
       (e) =>
-        `[Source ID: ${e.id}]\nCandidate Type: ${e.candidateType}\nEvidence Basis: ${e.evidenceBasis === 'full-source-extract' ? 'Full source extract' : 'Search snippet'}\nTitle: ${e.title}\nDomain: ${e.domain}\nPassage: ${e.excerpt}`
+        `[Source ID: ${e.id}]\nCandidate Type: ${e.candidateType}\nEvidence Basis: ${e.evidenceBasis === 'focused-source-extract' ? 'Focused source extract' : 'Search snippet'}\nTitle: ${e.title}\nDomain: ${e.domain}\nPassage: ${e.excerpt}`
     )
     .join('\n\n');
 

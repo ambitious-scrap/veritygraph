@@ -112,7 +112,7 @@ export async function runResearchPipeline(query: string): Promise<ResearchPipeli
   let extractedSources = 0;
   let snippetFallbackSources = 0;
   for (const basis of retainedUrlBasisMap.values()) {
-    if (basis === 'full-source-extract') {
+    if (basis === 'focused-source-extract') {
       extractedSources++;
     } else {
       snippetFallbackSources++;
