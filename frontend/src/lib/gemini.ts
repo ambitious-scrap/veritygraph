@@ -199,16 +199,25 @@ async function callGeminiJson<T>(
   } catch (primaryErr) {
     const categorized = classifyError(primaryErr);
 
-    // Fallback ONLY for retryable provider errors
+    // Fallback ONLY for retryable provider errors (429, 500, 502, 503, timeout)
     if (categorized.kind === 'retryable-provider') {
+      // Pause 1.2s before trying secondary key to clear rate-limit windows
+      await new Promise((resolve) => setTimeout(resolve, 1200));
       try {
         const data = await tryCall(secondaryKey);
         return { data, usedFallback: true };
       } catch {
-        throw new PipelineError(
-          stage,
-          `Gemini service failed during ${stage} across both primary and secondary keys.`
-        );
+        // Pause 1.5s and retry primary key once more
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        try {
+          const data = await tryCall(primaryKey);
+          return { data, usedFallback: false };
+        } catch {
+          throw new PipelineError(
+            stage,
+            `Gemini service failed during ${stage} across both primary and secondary keys.`
+          );
+        }
       }
     }
 

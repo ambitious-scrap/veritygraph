@@ -53,23 +53,21 @@ export async function runResearchPipeline(query: string): Promise<ResearchPipeli
   );
   const enrichedCandidatesPerClaim = await Promise.all(extractionPromises);
 
-  // Stage 5: Claim Verification (Parallel for each claim)
-  const verificationPromises = extractedClaims.map((claim, idx) =>
-    verifyClaimWithGemini(
+  // Stage 5: Claim Verification (Sequential per claim to avoid rate limit bursts)
+  const verifiedClaims = [];
+  for (let idx = 0; idx < extractedClaims.length; idx++) {
+    const claim = extractedClaims[idx];
+    const result = await verifyClaimWithGemini(
       claim.text,
       idx + 1,
       enrichedCandidatesPerClaim[idx],
       env.GEMINI_API_KEY_PRIMARY,
       env.GEMINI_API_KEY_SECONDARY,
       env.GEMINI_MODEL
-    )
-  );
-
-  const verificationResults = await Promise.all(verificationPromises);
-  const verifiedClaims = verificationResults.map((r) => {
-    if (r.usedFallback) usedFallback = true;
-    return r.claim;
-  });
+    );
+    if (result.usedFallback) usedFallback = true;
+    verifiedClaims.push(result.claim);
+  }
 
   // Stage 6: Synthesis
   const synthesisResult = await synthesizeReportWithGemini(
