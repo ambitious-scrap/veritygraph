@@ -10,6 +10,13 @@ export interface Evidence {
   relevanceScore: number;
 }
 
+export interface ConfidenceFactors {
+  evidenceCount: number;
+  distinctDomains: number;
+  hasContradiction: boolean;
+  appliedCap: string | null;
+}
+
 export interface Claim {
   id: string;
   text: string;
@@ -17,6 +24,16 @@ export interface Claim {
   confidence: number;
   explanation: string;
   evidence: Evidence[];
+  confidenceFactors: ConfidenceFactors;
+}
+
+export interface ResearchMetrics {
+  durationMs: number;
+  sourcesScanned: number;
+  distinctDomains: number;
+  supportedClaims: number;
+  challengedClaims: number;
+  insufficientClaims: number;
 }
 
 export interface ResearchRun {
@@ -24,5 +41,25 @@ export interface ResearchRun {
   query: string;
   summary: string;
   claims: Claim[];
+  metrics: ResearchMetrics;
   createdAt: string;
+}
+
+export type PipelineStage =
+  | 'initial-search'
+  | 'claim-extraction'
+  | 'evidence-search'
+  | 'verification'
+  | 'synthesis';
+
+export class PipelineError extends Error {
+  stage: PipelineStage;
+  safeMessage: string;
+
+  constructor(stage: PipelineStage, safeMessage: string) {
+    super(safeMessage);
+    this.name = 'PipelineError';
+    this.stage = stage;
+    this.safeMessage = safeMessage;
+  }
 }

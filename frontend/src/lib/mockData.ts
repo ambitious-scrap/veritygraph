@@ -6,6 +6,14 @@ export const MOCK_RESEARCH_RUN: ResearchRun = {
   summary:
     'Synthesis of 14 prospective cohort meta-analyses indicates moderate daily coffee intake (2–4 cups) is associated with a 15% reduction in all-cause mortality. However, claims regarding acute blood pressure reduction are directly contradicted by trial data, and evidence for decaffeinated coffee protection against specific neurodegenerative outcomes remains insufficient.',
   createdAt: new Date().toISOString(),
+  metrics: {
+    durationMs: 4200,
+    sourcesScanned: 18,
+    distinctDomains: 12,
+    supportedClaims: 1,
+    challengedClaims: 2,
+    insufficientClaims: 1,
+  },
   claims: [
     {
       id: 'claim-1',
@@ -14,6 +22,12 @@ export const MOCK_RESEARCH_RUN: ResearchRun = {
       confidence: 0.94,
       explanation:
         'Consistently corroborated by large prospective cohort meta-analyses controlling for smoking and key lifestyle factors.',
+      confidenceFactors: {
+        evidenceCount: 2,
+        distinctDomains: 2,
+        hasContradiction: false,
+        appliedCap: 'Capped at 95% (Global confidence upper bound)',
+      },
       evidence: [
         {
           id: 'ev-1',
@@ -44,6 +58,12 @@ export const MOCK_RESEARCH_RUN: ResearchRun = {
       confidence: 0.89,
       explanation:
         'Clinical trial data directly contradict this claim; acute caffeine ingestion induces a temporary mean arterial pressure increase of 3–10 mmHg.',
+      confidenceFactors: {
+        evidenceCount: 1,
+        distinctDomains: 1,
+        hasContradiction: true,
+        appliedCap: 'Capped at 70% (Fewer than 2 distinct domains)',
+      },
       evidence: [
         {
           id: 'ev-3',
@@ -61,9 +81,15 @@ export const MOCK_RESEARCH_RUN: ResearchRun = {
       id: 'claim-3',
       text: 'Coffee consumption lowers systemic inflammation markers across all demographics.',
       verdict: 'partial',
-      confidence: 0.76,
+      confidence: 0.75,
       explanation:
         'Reductions in CRP and IL-6 are documented in diabetic and high-BMI cohorts, but show no statistically significant change in healthy young adult populations.',
+      confidenceFactors: {
+        evidenceCount: 1,
+        distinctDomains: 1,
+        hasContradiction: false,
+        appliedCap: 'Capped at 75% (Partial support limits score)',
+      },
       evidence: [
         {
           id: 'ev-4',
@@ -84,6 +110,12 @@ export const MOCK_RESEARCH_RUN: ResearchRun = {
       confidence: 0.42,
       explanation:
         'Primary literature demonstrates caffeine mediates adenosine A2A receptor antagonism; decaf observational studies lack statistical power and mechanistic support.',
+      confidenceFactors: {
+        evidenceCount: 1,
+        distinctDomains: 1,
+        hasContradiction: false,
+        appliedCap: 'Capped at 45% (Insufficient evidence limits score)',
+      },
       evidence: [
         {
           id: 'ev-5',

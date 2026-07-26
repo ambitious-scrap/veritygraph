@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { PipelineError } from './types';
 
 const FETCH_TIMEOUT_MS = 15000;
 
@@ -68,8 +69,9 @@ export async function searchInitialSources(
   query: string,
   apiKey: string
 ): Promise<RawSource[]> {
+  let res: Response;
   try {
-    const res = await fetchWithTimeout('https://api.tavily.com/search', {
+    res = await fetchWithTimeout('https://api.tavily.com/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -81,40 +83,58 @@ export async function searchInitialSources(
         include_raw_content: false,
       }),
     });
-
-    if (!res.ok) {
-      return [];
-    }
-
-    const data = await res.json();
-    const parsed = tavilyResponseSchema.safeParse(data);
-    if (!parsed.success) {
-      return [];
-    }
-
-    const rawList = parsed.data.results;
-    const seen = new Set<string>();
-    const sources: RawSource[] = [];
-
-    let count = 1;
-    for (const item of rawList) {
-      const canonical = normalizeUrl(item.url);
-      if (seen.has(canonical)) continue;
-      seen.add(canonical);
-
-      sources.push({
-        id: `src-${count++}`,
-        title: item.title,
-        url: item.url,
-        domain: extractDomain(item.url),
-        excerpt: item.content || item.title,
-      });
-    }
-
-    return sources;
   } catch {
-    return [];
+    throw new PipelineError(
+      'initial-search',
+      'Failed to connect to search provider during initial literature search.'
+    );
   }
+
+  if (!res.ok) {
+    throw new PipelineError(
+      'initial-search',
+      `Search provider returned error status (${res.status}) during initial research.`
+    );
+  }
+
+  let data: unknown;
+  try {
+    data = await res.json();
+  } catch {
+    throw new PipelineError(
+      'initial-search',
+      'Failed to parse search provider response during initial research.'
+    );
+  }
+
+  const parsed = tavilyResponseSchema.safeParse(data);
+  if (!parsed.success) {
+    throw new PipelineError(
+      'initial-search',
+      'Search provider returned malformed response schema during initial research.'
+    );
+  }
+
+  const rawList = parsed.data.results;
+  const seen = new Set<string>();
+  const sources: RawSource[] = [];
+
+  let count = 1;
+  for (const item of rawList) {
+    const canonical = normalizeUrl(item.url);
+    if (seen.has(canonical)) continue;
+    seen.add(canonical);
+
+    sources.push({
+      id: `src-${count++}`,
+      title: item.title,
+      url: item.url,
+      domain: extractDomain(item.url),
+      excerpt: item.content || item.title,
+    });
+  }
+
+  return sources;
 }
 
 /**
@@ -131,8 +151,10 @@ export async function searchClaimEvidence(
     candidateType: 'support-candidate' | 'challenge-candidate'
   ): Promise<CandidateEvidence[]> => {
     if (!q.trim()) return [];
+
+    let res: Response;
     try {
-      const res = await fetchWithTimeout('https://api.tavily.com/search', {
+      res = await fetchWithTimeout('https://api.tavily.com/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -144,25 +166,47 @@ export async function searchClaimEvidence(
           include_raw_content: false,
         }),
       });
-
-      if (!res.ok) return [];
-
-      const data = await res.json();
-      const parsed = tavilyResponseSchema.safeParse(data);
-      if (!parsed.success) return [];
-
-      let idx = 1;
-      return parsed.data.results.map((item) => ({
-        id: `c${claimIndex}-ev-${candidateType === 'support-candidate' ? 's' : 'c'}-${idx++}`,
-        title: item.title,
-        url: item.url,
-        domain: extractDomain(item.url),
-        excerpt: item.content || item.title,
-        candidateType,
-      }));
     } catch {
-      return [];
+      throw new PipelineError(
+        'evidence-search',
+        `Failed to connect to search provider while searching evidence for claim ${claimIndex}.`
+      );
     }
+
+    if (!res.ok) {
+      throw new PipelineError(
+        'evidence-search',
+        `Search provider returned error (${res.status}) while retrieving evidence for claim ${claimIndex}.`
+      );
+    }
+
+    let data: unknown;
+    try {
+      data = await res.json();
+    } catch {
+      throw new PipelineError(
+        'evidence-search',
+        `Failed to parse evidence search response for claim ${claimIndex}.`
+      );
+    }
+
+    const parsed = tavilyResponseSchema.safeParse(data);
+    if (!parsed.success) {
+      throw new PipelineError(
+        'evidence-search',
+        `Search provider returned malformed evidence schema for claim ${claimIndex}.`
+      );
+    }
+
+    let idx = 1;
+    return parsed.data.results.map((item) => ({
+      id: `c${claimIndex}-ev-${candidateType === 'support-candidate' ? 's' : 'c'}-${idx++}`,
+      title: item.title,
+      url: item.url,
+      domain: extractDomain(item.url),
+      excerpt: item.content || item.title,
+      candidateType,
+    }));
   };
 
   const [supportResults, challengeResults] = await Promise.all([

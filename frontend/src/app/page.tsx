@@ -16,6 +16,10 @@ import {
   BarChart2,
   AlertCircle,
   Database,
+  Info,
+  Globe,
+  Clock,
+  Layers,
 } from 'lucide-react';
 import { MOCK_RESEARCH_RUN } from '@/lib/mockData';
 import { Claim, ClaimVerdict, ResearchRun } from '@/lib/types';
@@ -32,7 +36,9 @@ export default function Home() {
   const [query, setQuery] = useState(MOCK_RESEARCH_RUN.query);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [stageIndex, setStageIndex] = useState(0);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [errorDetails, setErrorDetails] = useState<{ message: string; stage?: string } | null>(
+    null
+  );
   const [activeRun, setActiveRun] = useState<ResearchRun | null>(MOCK_RESEARCH_RUN);
   const [expandedClaims, setExpandedClaims] = useState<Record<string, boolean>>({
     'claim-1': true,
@@ -40,6 +46,7 @@ export default function Home() {
     'claim-3': true,
     'claim-4': true,
   });
+  const [expandedWhyScore, setExpandedWhyScore] = useState<Record<string, boolean>>({});
 
   // Stage rotator effect while analyzing
   useEffect(() => {
@@ -56,18 +63,25 @@ export default function Home() {
     if (!trimmed) return;
 
     if (trimmed.length < 10) {
-      setErrorMessage('Query must be at least 10 characters long.');
+      setErrorDetails({
+        message: 'Query must be at least 10 characters long.',
+        stage: 'initial-search',
+      });
       return;
     }
 
     if (trimmed.length > 500) {
-      setErrorMessage('Query must be at most 500 characters long.');
+      setErrorDetails({
+        message: 'Query must be at most 500 characters long.',
+        stage: 'initial-search',
+      });
       return;
     }
 
     setIsAnalyzing(true);
     setStageIndex(0);
-    setErrorMessage(null);
+    setErrorDetails(null);
+
     try {
       const res = await fetch('/api/research', {
         method: 'POST',
@@ -78,12 +92,12 @@ export default function Home() {
       const data = await res.json();
 
       if (!res.ok) {
-        setErrorMessage(
-          data.error || 'Failed to complete research pipeline execution.'
-        );
+        setErrorDetails({
+          message: data.error || 'Failed to complete research pipeline execution.',
+          stage: data.stage || 'initial-search',
+        });
       } else {
         setActiveRun(data as ResearchRun);
-        // Expand all returned claims by default
         const newExpanded: Record<string, boolean> = {};
         if (Array.isArray(data.claims)) {
           data.claims.forEach((c: Claim) => {
@@ -93,22 +107,23 @@ export default function Home() {
         setExpandedClaims(newExpanded);
       }
     } catch {
-      setErrorMessage('Network error connecting to research verification service.');
+      setErrorDetails({
+        message: 'Network error connecting to research verification service.',
+        stage: 'initial-search',
+      });
     } finally {
       setIsAnalyzing(false);
     }
   };
 
-  // Only populates the textarea
   const handlePopulateExample = () => {
     setQuery('Does coffee consumption decrease overall mortality and cardiovascular disease risk?');
-    setErrorMessage(null);
+    setErrorDetails(null);
   };
 
-  // Loads demo mock result directly
   const handleLoadDemoResult = () => {
     setQuery(MOCK_RESEARCH_RUN.query);
-    setErrorMessage(null);
+    setErrorDetails(null);
     setActiveRun({
       ...MOCK_RESEARCH_RUN,
       createdAt: new Date().toISOString(),
@@ -123,6 +138,13 @@ export default function Home() {
 
   const toggleExpand = (claimId: string) => {
     setExpandedClaims((prev) => ({
+      ...prev,
+      [claimId]: !prev[claimId],
+    }));
+  };
+
+  const toggleWhyScore = (claimId: string) => {
+    setExpandedWhyScore((prev) => ({
       ...prev,
       [claimId]: !prev[claimId],
     }));
@@ -161,7 +183,6 @@ export default function Home() {
     }
   };
 
-  // Stats calculation
   const totalClaims = activeRun?.claims.length || 0;
   const supportedCount =
     activeRun?.claims.filter((c) => c.verdict === 'supported').length || 0;
@@ -173,11 +194,10 @@ export default function Home() {
     activeRun?.claims.filter((c) => c.verdict === 'insufficient').length || 0;
   const avgConfidence = totalClaims
     ? Math.round(
-        (activeRun!.claims.reduce(
+        activeRun!.claims.reduce(
           (acc, c) => acc + (c.confidence > 1 ? c.confidence : c.confidence * 100),
           0
-        ) /
-          totalClaims)
+        ) / totalClaims
       )
     : 0;
 
@@ -201,7 +221,7 @@ export default function Home() {
           </div>
           <div className="flex items-center gap-2">
             <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-700 border border-slate-200">
-              Live Pipeline v1.0
+              Pipeline Hardened v1.1
             </span>
           </div>
         </div>
@@ -281,12 +301,17 @@ export default function Home() {
         </section>
 
         {/* Error Banner */}
-        {errorMessage && (
+        {errorDetails && (
           <div className="bg-rose-50 border border-rose-200 rounded-xl p-4 flex items-start gap-3 text-rose-800 text-sm">
             <AlertCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
             <div className="space-y-1">
-              <span className="font-semibold block">Research Pipeline Error</span>
-              <span>{errorMessage}</span>
+              <div className="flex items-center gap-2">
+                <span className="font-bold uppercase tracking-wider text-xs bg-rose-200 text-rose-900 px-2 py-0.5 rounded font-mono">
+                  Stage: {errorDetails.stage || 'pipeline'}
+                </span>
+                <span className="font-semibold text-slate-900">Pipeline Error</span>
+              </div>
+              <p className="text-xs text-rose-700">{errorDetails.message}</p>
             </div>
           </div>
         )}
@@ -309,14 +334,23 @@ export default function Home() {
                 </p>
               </div>
 
-              {/* Verification Stats */}
+              {/* Verification Stats & Run Metrics */}
               <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-3">
-                <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
-                  <BarChart2 className="w-4 h-4 text-slate-700" />
-                  <h2 className="text-sm font-bold tracking-tight text-slate-900 uppercase">
-                    Verification Statistics
-                  </h2>
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                  <div className="flex items-center gap-2">
+                    <BarChart2 className="w-4 h-4 text-slate-700" />
+                    <h2 className="text-sm font-bold tracking-tight text-slate-900 uppercase">
+                      Verification Metrics
+                    </h2>
+                  </div>
+                  {activeRun.metrics && (
+                    <span className="inline-flex items-center gap-1 text-xs text-slate-500 font-mono">
+                      <Clock className="w-3 h-3 text-slate-400" />
+                      {(activeRun.metrics.durationMs / 1000).toFixed(1)}s
+                    </span>
+                  )}
                 </div>
+
                 <div className="grid grid-cols-2 gap-3 pt-1">
                   <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg">
                     <span className="block text-xs font-medium text-slate-500">
@@ -334,6 +368,24 @@ export default function Home() {
                       {avgConfidence}%
                     </span>
                   </div>
+                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg">
+                    <span className="block text-xs font-medium text-slate-500 inline-flex items-center gap-1">
+                      <Layers className="w-3 h-3 text-slate-400" />
+                      Sources Scanned
+                    </span>
+                    <span className="text-lg font-bold text-slate-900">
+                      {activeRun.metrics?.sourcesScanned ?? 0}
+                    </span>
+                  </div>
+                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg">
+                    <span className="block text-xs font-medium text-slate-500 inline-flex items-center gap-1">
+                      <Globe className="w-3 h-3 text-slate-400" />
+                      Distinct Domains
+                    </span>
+                    <span className="text-lg font-bold text-slate-900">
+                      {activeRun.metrics?.distinctDomains ?? 0}
+                    </span>
+                  </div>
                   <div className="p-3 bg-emerald-50/50 border border-emerald-200 rounded-lg">
                     <span className="block text-xs font-medium text-emerald-800">
                       Supported
@@ -344,26 +396,10 @@ export default function Home() {
                   </div>
                   <div className="p-3 bg-rose-50/50 border border-rose-200 rounded-lg">
                     <span className="block text-xs font-medium text-rose-800">
-                      Contradicted
+                      Challenged / Insufficient
                     </span>
                     <span className="text-lg font-bold text-rose-900">
-                      {contradictedCount}
-                    </span>
-                  </div>
-                  <div className="p-3 bg-amber-50/50 border border-amber-200 rounded-lg">
-                    <span className="block text-xs font-medium text-amber-800">
-                      Partial
-                    </span>
-                    <span className="text-lg font-bold text-amber-900">
-                      {partialCount}
-                    </span>
-                  </div>
-                  <div className="p-3 bg-slate-100/70 border border-slate-300 rounded-lg">
-                    <span className="block text-xs font-medium text-slate-700">
-                      Insufficient
-                    </span>
-                    <span className="text-lg font-bold text-slate-900">
-                      {insufficientCount}
+                      {contradictedCount + partialCount + insufficientCount}
                     </span>
                   </div>
                 </div>
@@ -377,13 +413,14 @@ export default function Home() {
                   Extracted & Verified Claims ({totalClaims})
                 </h2>
                 <span className="text-xs text-slate-500">
-                  Claim-level verification graph
+                  Claim-level evidence verification graph
                 </span>
               </div>
 
               <div className="space-y-4">
                 {activeRun.claims.map((claim: Claim) => {
                   const isExpanded = !!expandedClaims[claim.id];
+                  const isWhyExpanded = !!expandedWhyScore[claim.id];
                   const confidenceDisplay = Math.round(
                     claim.confidence > 1 ? claim.confidence : claim.confidence * 100
                   );
@@ -400,8 +437,22 @@ export default function Home() {
                             <span className="text-xs font-medium text-slate-500">
                               Confidence: {confidenceDisplay}%
                             </span>
+                            <button
+                              type="button"
+                              onClick={() => toggleWhyScore(claim.id)}
+                              className="inline-flex items-center gap-1 text-xs font-semibold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 px-2 py-0.5 rounded transition-colors"
+                            >
+                              <Info className="w-3 h-3 text-slate-500" />
+                              Why this score?
+                              {isWhyExpanded ? (
+                                <ChevronUp className="w-3 h-3" />
+                              ) : (
+                                <ChevronDown className="w-3 h-3" />
+                              )}
+                            </button>
                           </div>
                           <button
+                            type="button"
                             onClick={() => toggleExpand(claim.id)}
                             className="inline-flex items-center gap-1 text-xs font-semibold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 px-2.5 py-1 rounded transition-colors"
                           >
@@ -419,6 +470,47 @@ export default function Home() {
                             )}
                           </button>
                         </div>
+
+                        {/* Expandable "Why this score?" Confidence Explanation */}
+                        {isWhyExpanded && claim.confidenceFactors && (
+                          <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs space-y-2">
+                            <h4 className="font-bold text-slate-800 uppercase tracking-wider text-[11px]">
+                              Deterministic Confidence Factors
+                            </h4>
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                              <div className="bg-white p-2 border border-slate-200 rounded">
+                                <span className="text-slate-500 block">Verified Evidence</span>
+                                <span className="font-bold text-slate-900">
+                                  {claim.confidenceFactors.evidenceCount} sources
+                                </span>
+                              </div>
+                              <div className="bg-white p-2 border border-slate-200 rounded">
+                                <span className="text-slate-500 block">Distinct Domains</span>
+                                <span className="font-bold text-slate-900">
+                                  {claim.confidenceFactors.distinctDomains} domains
+                                </span>
+                              </div>
+                              <div className="bg-white p-2 border border-slate-200 rounded">
+                                <span className="text-slate-500 block">Contradictions</span>
+                                <span
+                                  className={`font-bold ${
+                                    claim.confidenceFactors.hasContradiction
+                                      ? 'text-rose-700'
+                                      : 'text-emerald-700'
+                                  }`}
+                                >
+                                  {claim.confidenceFactors.hasContradiction ? 'Detected' : 'None'}
+                                </span>
+                              </div>
+                              <div className="bg-white p-2 border border-slate-200 rounded">
+                                <span className="text-slate-500 block">Confidence Cap</span>
+                                <span className="font-bold text-slate-900 truncate block">
+                                  {claim.confidenceFactors.appliedCap || 'No cap applied'}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        )}
 
                         {/* Claim Text */}
                         <h3 className="text-base font-semibold text-slate-900 leading-snug">
@@ -499,7 +591,7 @@ export default function Home() {
       <footer className="border-t border-slate-200 bg-white py-4 mt-auto">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 flex items-center justify-between text-xs text-slate-500">
           <span>VerityGraph MVP — Evidence-First Multi-Agent Research System</span>
-          <span>Live Verification Engine</span>
+          <span>OpenRouter Live Verification Engine</span>
         </div>
       </footer>
     </div>

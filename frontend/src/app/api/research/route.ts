@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { runResearchPipeline } from '@/lib/research';
+import { PipelineError } from '@/lib/types';
 
 const requestSchema = z.object({
   query: z
@@ -16,23 +17,38 @@ export async function POST(req: Request) {
     try {
       body = await req.json();
     } catch {
-      return NextResponse.json({ error: 'Invalid JSON payload' }, { status: 400 });
+      return NextResponse.json(
+        { error: 'Invalid JSON payload in request body.', stage: 'initial-search' },
+        { status: 400 }
+      );
     }
 
     const parsed = requestSchema.safeParse(body);
 
     if (!parsed.success) {
       const errorMessage =
-        parsed.error.issues[0]?.message || 'Invalid query parameter';
-      return NextResponse.json({ error: errorMessage }, { status: 400 });
+        parsed.error.issues[0]?.message || 'Invalid query parameter.';
+      return NextResponse.json(
+        { error: errorMessage, stage: 'initial-search' },
+        { status: 400 }
+      );
     }
 
     const researchRun = await runResearchPipeline(parsed.data.query);
     return NextResponse.json(researchRun, { status: 200 });
-  } catch {
-    // Sanitized 500 error response without exposing internal errors or keys
+  } catch (error) {
+    if (error instanceof PipelineError) {
+      return NextResponse.json(
+        { error: error.safeMessage, stage: error.stage },
+        { status: 500 }
+      );
+    }
+
     return NextResponse.json(
-      { error: 'Verification pipeline execution failed. Please verify API keys and network connectivity.' },
+      {
+        error: 'An unexpected pipeline error occurred during research verification.',
+        stage: 'initial-search',
+      },
       { status: 500 }
     );
   }
