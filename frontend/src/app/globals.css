@@ -133,13 +133,42 @@ body {
   animation: pulse-dot 2s ease-in-out infinite;
 }
 
+@keyframes demo-run-in {
+  from { opacity: 0; transform: translateY(14px) scale(0.99); filter: saturate(0.82); }
+  to { opacity: 1; transform: translateY(0) scale(1); filter: saturate(1); }
+}
+
+.demo-run {
+  animation: demo-run-in 0.5s var(--ease) both;
+}
+
+@keyframes demo-cycle-progress {
+  from { transform: scaleX(0); transform-origin: left; }
+  to { transform: scaleX(1); transform-origin: left; }
+}
+
+.demo-cycle-progress {
+  position: relative;
+  overflow: hidden;
+}
+
+.demo-cycle-progress::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--accent-text);
+  animation: demo-cycle-progress 6.5s linear both;
+}
+
 /* ── Reduced motion ───────────────────────────────────── */
 
 @media (prefers-reduced-motion: reduce) {
   .anim-in,
-  .anim-bar { animation: none; opacity: 1; transform: none; }
+  .anim-bar,
+  .demo-run { animation: none; opacity: 1; transform: none; }
   .stagger > * { animation-delay: 0ms !important; }
-  .anim-pulse { animation: none; opacity: 1; }
+  .anim-pulse,
+  .demo-cycle-progress::after { animation: none; opacity: 1; }
 }
 
 /* ── Utilities ────────────────────────────────────────── */

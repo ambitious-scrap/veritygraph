@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   ShieldCheck,
   CheckCircle2,
@@ -27,8 +27,11 @@ import {
   Check,
   Cpu,
   Minus,
+  ChevronLeft,
+  ChevronRight,
+  Pause,
 } from 'lucide-react';
-import { MOCK_RESEARCH_RUN } from '@/lib/mockData';
+import { DEMO_SCENARIOS } from '@/lib/mockData';
 import {
   Claim,
   ClaimVerdict,
@@ -145,7 +148,41 @@ export default function Home() {
   const [whyOpen, setWhyOpen] = useState<Record<string, boolean>>({});
   const [reverifying, setReverifying] = useState<Record<string, boolean>>({});
   const [copied, setCopied] = useState<string | null>(null);
+  const [demoIndex, setDemoIndex] = useState(0);
+  const [isDemoCycling, setIsDemoCycling] = useState(false);
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  const applyDemo = useCallback((index: number) => {
+    const normalizedIndex = (index + DEMO_SCENARIOS.length) % DEMO_SCENARIOS.length;
+    const scenario = DEMO_SCENARIOS[normalizedIndex];
+    setDemoIndex(normalizedIndex);
+    setSelectedMode(scenario.mode);
+    setQuery(scenario.run.query);
+    setError(null);
+    setRun({ ...scenario.run, createdAt: new Date().toISOString() });
+    setOpen({});
+    setWhyOpen({});
+  }, []);
+
+  useEffect(() => {
+    const media = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const update = () => {
+      setPrefersReducedMotion(media.matches);
+      if (media.matches) setIsDemoCycling(false);
+    };
+    const initialSync = window.setTimeout(update, 0);
+    media.addEventListener('change', update);
+    return () => {
+      window.clearTimeout(initialSync);
+      media.removeEventListener('change', update);
+    };
+  }, []);
+  useEffect(() => {
+    if (!isDemoCycling || prefersReducedMotion) return;
+    const timer = window.setTimeout(() => applyDemo(demoIndex + 1), 6500);
+    return () => window.clearTimeout(timer);
+  }, [applyDemo, demoIndex, isDemoCycling, prefersReducedMotion]);
 
   useEffect(() => {
     if (!isAnalyzing) return;
@@ -164,7 +201,7 @@ export default function Home() {
       if (t.length < 10) { setError({ message: 'Query must be at least 10 characters.', stage: 'input' }); return; }
       if (t.length > 500) { setError({ message: 'Query must be at most 500 characters.', stage: 'input' }); return; }
     }
-    setIsAnalyzing(true); setStageIndex(0); setError(null);
+    setIsAnalyzing(true); setStageIndex(0); setError(null); setIsDemoCycling(false);
     try {
       const res = await fetch('/api/research', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -182,19 +219,20 @@ export default function Home() {
   };
 
   const loadExample = () => {
+    setIsDemoCycling(false);
     setSelectedMode('research');
     setQuery('Does coffee consumption decrease overall mortality and cardiovascular disease risk?');
     setError(null);
     inputRef.current?.focus();
   };
 
-  const loadDemo = () => {
-    setSelectedMode('audit');
-    setQuery(MOCK_RESEARCH_RUN.query);
-    setError(null);
-    setRun({ ...MOCK_RESEARCH_RUN, createdAt: new Date().toISOString() });
-    setOpen({});
-    setWhyOpen({});
+  const loadDemo = () => applyDemo(demoIndex);
+  const previousDemo = () => applyDemo(demoIndex - 1);
+  const nextDemo = () => applyDemo(demoIndex + 1);
+  const toggleDemoCycling = () => {
+    if (prefersReducedMotion) return;
+    if (!isDemoCycling && !run) applyDemo(demoIndex);
+    setIsDemoCycling((current) => !current);
   };
 
   const toggle = (id: string) => setOpen((p) => ({ ...p, [id]: !p[id] }));
@@ -208,6 +246,7 @@ export default function Home() {
 
   const reverifyClaim = async (claim: Claim) => {
     if (reverifying[claim.id]) return;
+    const sourceRunId = run?.id;
     setReverifying((current) => ({ ...current, [claim.id]: true }));
     setError(null);
     try {
@@ -234,7 +273,7 @@ export default function Home() {
         manifestPatch: { generatedAt: string; evidenceCount: number; focusedExtractCount: number; snippetFallbackCount: number };
       };
       setRun((current) => {
-        if (!current) return current;
+        if (!current || !sourceRunId || current.id !== sourceRunId) return current;
         const claims = current.claims.map((item) => item.id === result.claim.id ? { ...result.claim, sourceQuote: item.sourceQuote, auditAnchor: item.auditAnchor } : item);
         const evidence = claims.reduce((count, item) => count + item.evidence.length, 0);
         const focused = claims.reduce((count, item) => count + item.evidence.filter((item) => item.evidenceBasis === 'focused-source-extract').length, 0);
@@ -507,7 +546,7 @@ export default function Home() {
         </section>
 
 
-        <section id="verification-workspace" aria-labelledby="workspace-title" className="workspace-section max-w-3xl mx-auto mb-8">
+        <section id="verification-workspace" aria-labelledby="workspace-title" className="workspace-section max-w-3xl mx-auto mb-8" onFocusCapture={() => setIsDemoCycling(false)}>
           <div className="flex items-end justify-between gap-4 mb-3">
             <div>
               <p className="text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--accent-text)', letterSpacing: '0.1em' }}>
@@ -528,13 +567,13 @@ export default function Home() {
           </div>
 
           <div className="rounded-2xl p-4 sm:p-5 shadow-2xl" style={{ background: 'var(--bg-raised)', border: '1px solid var(--border)' }}>
-            <div className="flex gap-2 mb-3" role="tablist" aria-label="Workflow mode">
-              <button type="button" role="tab" onClick={() => setSelectedMode('research')} aria-selected={selectedMode === 'research'}
+            <div className="flex gap-2 mb-3" aria-label="Workflow mode">
+              <button type="button" onClick={() => setSelectedMode('research')} aria-pressed={selectedMode === 'research'}
                 className="inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 px-3 py-2 text-[11px] font-bold rounded-md tr"
                 style={{ background: selectedMode === 'research' ? 'var(--accent-dim)' : 'var(--bg-overlay)', color: selectedMode === 'research' ? 'var(--accent-text)' : 'var(--ink-2)', border: '1px solid var(--border-subtle)' }}>
                 <Search className="w-3 h-3" /> Research
               </button>
-              <button type="button" role="tab" onClick={() => setSelectedMode('audit')} aria-selected={selectedMode === 'audit'}
+              <button type="button" onClick={() => setSelectedMode('audit')} aria-pressed={selectedMode === 'audit'}
                 className="inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 px-3 py-2 text-[11px] font-bold rounded-md tr"
                 style={{ background: selectedMode === 'audit' ? 'var(--accent-dim)' : 'var(--bg-overlay)', color: selectedMode === 'audit' ? 'var(--accent-text)' : 'var(--ink-2)', border: '1px solid var(--border-subtle)' }}>
                 <Cpu className="w-3 h-3" /> Audit
@@ -550,7 +589,7 @@ export default function Home() {
                 id="research-query"
                 rows={selectedMode === 'audit' ? 5 : 4}
                 value={query}
-                onChange={(e) => setQuery(e.target.value)}
+                onChange={(e) => { setIsDemoCycling(false); setQuery(e.target.value); }}
                 disabled={isAnalyzing}
                 placeholder={selectedMode === 'audit' ? 'Paste the answer or report you want to check...' : 'Enter a claim or question to verify...'}
                 className="w-full h-32 rounded-lg px-4 py-3 text-sm resize-none overflow-y-auto tr disabled:opacity-40"
@@ -581,6 +620,63 @@ export default function Home() {
                   style={{ background: 'var(--bg-overlay)', color: 'var(--ink-2)', border: '1px solid var(--border-subtle)' }}>
                   <Database className="w-3 h-3" /> Load demo
                 </button>
+              </div>
+              <div className="mt-4 pt-4" style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--ink-3)' }}>
+                      Demo carousel
+                    </span>
+                    <span className="text-[10px] font-mono" style={{ color: 'var(--accent-text)' }}>
+                      {demoIndex + 1}/{DEMO_SCENARIOS.length}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <button type="button" onClick={() => { setIsDemoCycling(false); previousDemo(); }} aria-label="Previous demo"
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-md tr"
+                      style={{ color: 'var(--ink-2)', background: 'var(--bg-overlay)', border: '1px solid var(--border-subtle)' }}>
+                      <ChevronLeft className="w-3.5 h-3.5" />
+                    </button>
+                    <button type="button" onClick={() => { setIsDemoCycling(false); nextDemo(); }} aria-label="Next demo"
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-md tr"
+                      style={{ color: 'var(--ink-2)', background: 'var(--bg-overlay)', border: '1px solid var(--border-subtle)' }}>
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    </button>
+                    <button type="button" onClick={toggleDemoCycling} disabled={prefersReducedMotion}
+                      aria-label={prefersReducedMotion ? 'Auto-cycle disabled because reduced motion is enabled' : isDemoCycling ? 'Pause demo cycle' : 'Start demo cycle'}
+                      className="inline-flex min-h-8 items-center gap-1.5 px-2.5 rounded-md text-[10px] font-semibold tr disabled:opacity-40"
+                      style={{ color: isDemoCycling ? 'var(--accent-text)' : 'var(--ink-2)', background: isDemoCycling ? 'var(--accent-dim)' : 'var(--bg-overlay)', border: '1px solid var(--border-subtle)' }}>
+                      {isDemoCycling ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
+                      {prefersReducedMotion ? 'Motion off' : isDemoCycling ? 'Pause cycle' : 'Cycle demos'}
+                    </button>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-1.5 mt-3">
+                  {DEMO_SCENARIOS.map((scenario, index) => (
+                    <button key={scenario.id} type="button" onClick={() => { setIsDemoCycling(false); applyDemo(index); }}
+                      aria-pressed={demoIndex === index}
+                      className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[10px] font-semibold tr"
+                      style={{
+                        color: demoIndex === index ? 'var(--accent-text)' : 'var(--ink-3)',
+                        background: demoIndex === index ? 'var(--accent-dim)' : 'var(--bg-overlay)',
+                        border: `1px solid ${demoIndex === index ? 'var(--focus)' : 'var(--border-subtle)'}`,
+                      }}>
+                      <span className="h-1.5 w-1.5 rounded-full" style={{ background: demoIndex === index ? 'var(--accent)' : 'var(--ink-3)' }} />
+                      {scenario.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="mt-3 flex items-center gap-2">
+                  <div className="flex flex-1 gap-1" aria-hidden="true">
+                    {DEMO_SCENARIOS.map((scenario, index) => (
+                      <span key={scenario.id} className={`h-1 flex-1 rounded-full ${isDemoCycling && demoIndex === index ? 'demo-cycle-progress' : ''}`}
+                        style={{ background: demoIndex === index ? 'var(--accent)' : 'var(--border)' }} />
+                    ))}
+                  </div>
+                  <span className="text-[10px] truncate max-w-[18rem]" style={{ color: 'var(--ink-3)' }}>
+                    {DEMO_SCENARIOS[demoIndex].description}
+                  </span>
+                </div>
               </div>
             </form>
           </div>
@@ -613,12 +709,18 @@ export default function Home() {
 
 
         {run && (
-          <div className="space-y-6 anim-in">
+          <div key={run.id} className="space-y-6 anim-in demo-run">
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg p-3"
                  style={{ background: 'var(--bg-raised)', border: '1px solid var(--border-subtle)' }}>
               <span className="text-[11px] font-bold uppercase tracking-wider" style={{ color: 'var(--ink-3)' }}>
                 {run.workflowMode === 'audit' ? 'AI answer audit' : 'Research verification'}
               </span>
+              {run.mode === 'demo' && (
+                <span className="inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-semibold"
+                  style={{ color: 'var(--accent-text)', background: 'var(--accent-dim)', border: '1px solid var(--focus)' }}>
+                  <Database className="w-3 h-3" /> Demo {demoIndex + 1}/{DEMO_SCENARIOS.length}
+                </span>
+              )}
               <div className="flex flex-wrap gap-2">
                 <button type="button" onClick={() => exportReport('md')}
                   className="inline-flex min-h-11 items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold rounded-md tr"
