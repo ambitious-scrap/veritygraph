@@ -150,12 +150,13 @@ export const MOCK_RESEARCH_RUN: ResearchRun = {
   ],
 };
 
-function makeDemoClaim(base: Claim, seed: DemoClaimSeed, claimIndex: number, mode: DemoScenario['mode']): Claim {
+function makeDemoClaim(base: Claim, seed: DemoClaimSeed, claimIndex: number, mode: DemoScenario['mode'], sourceText: string): Claim {
   const evidence = seed.evidence.map((item, evidenceIndex) => ({
     ...item,
     id: `demo-${claimIndex + 1}-${evidenceIndex + 1}`,
   }));
   const independentOrigins = new Set(evidence.map((item) => item.originGroupId)).size;
+  const anchorStart = mode === 'audit' ? sourceText.indexOf(seed.text) : -1;
   const claimBuildStatus = seed.verdict === 'contradicted' || (seed.verdict === 'insufficient' && seed.confidence <= 0.3)
     ? 'fail'
     : seed.verdict === 'supported' && seed.confidence >= 0.7 && independentOrigins >= 2
@@ -168,7 +169,12 @@ function makeDemoClaim(base: Claim, seed: DemoClaimSeed, claimIndex: number, mod
     text: seed.text,
     sourceQuote: mode === 'audit' ? seed.text : undefined,
     auditAnchor: mode === 'audit'
-      ? { quote: seed.text, startIndex: 0, endIndex: seed.text.length, matchStatus: 'exact' }
+      ? {
+        quote: seed.text,
+        startIndex: anchorStart >= 0 ? anchorStart : null,
+        endIndex: anchorStart >= 0 ? anchorStart + seed.text.length : null,
+        matchStatus: anchorStart >= 0 ? 'exact' : 'unmatched',
+      }
       : undefined,
     verdict: seed.verdict,
     confidence: seed.confidence,
@@ -184,7 +190,7 @@ function makeDemoClaim(base: Claim, seed: DemoClaimSeed, claimIndex: number, mod
       sourceCount: evidence.length,
       independentOrigins,
       duplicateGroups: evidence.length - independentOrigins,
-      syndicatedSourceCount: evidence.filter((item) => item.originGroupId !== `origin-${claimIndex + 1}`).length > 1 ? 1 : 0,
+      syndicatedSourceCount: 0,
     },
     missingEvidence: seed.missingEvidence,
     nextBestQuery: seed.nextBestQuery,
@@ -206,7 +212,7 @@ function makeDemoRun(
     claims: DemoClaimSeed[];
   },
 ): ResearchRun {
-  const claims = config.claims.map((seed, index) => makeDemoClaim(base.claims[index], seed, index, config.mode));
+  const claims = config.claims.map((seed, index) => makeDemoClaim(base.claims[index], seed, index, config.mode, config.query));
   const supportedClaims = claims.filter((claim) => claim.verdict === 'supported').length;
   const warningClaims = claims.filter((claim) => claim.claimBuildStatus === 'warning').length;
   const failedClaims = claims.filter((claim) => claim.claimBuildStatus === 'fail').length;
@@ -370,7 +376,7 @@ const REMOTE_WORK_RESEARCH_RUN = makeDemoRun(MOCK_RESEARCH_RUN, {
 const EV_RESEARCH_RUN = makeDemoRun(MOCK_RESEARCH_RUN, {
   id: 'run-demo-ev',
   mode: 'audit',
-  query: 'Electric vehicles always produce zero emissions and are cleaner in every situation. Battery production is the only environmental cost. EV adoption immediately solves urban air pollution.',
+  query: 'Electric vehicles produce no tailpipe emissions during operation. Electric vehicles are cleaner in every situation than combustion vehicles. Electric vehicle adoption immediately solves urban air pollution.',
   summary: 'The audit separates a true operational-emissions distinction from overbroad environmental claims. Electric vehicles can reduce tailpipe pollution, but lifecycle impacts depend on electricity generation, battery production, and deployment context.',
   claims: [
     {

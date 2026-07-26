@@ -150,6 +150,7 @@ export default function Home() {
   const [copied, setCopied] = useState<string | null>(null);
   const [demoIndex, setDemoIndex] = useState(0);
   const [isDemoCycling, setIsDemoCycling] = useState(false);
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(() => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const applyDemo = useCallback((index: number) => {
@@ -165,10 +166,19 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (!isDemoCycling) return;
+    const media = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const update = () => {
+      setPrefersReducedMotion(media.matches);
+      if (media.matches) setIsDemoCycling(false);
+    };
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
+  useEffect(() => {
+    if (!isDemoCycling || prefersReducedMotion) return;
     const timer = window.setTimeout(() => applyDemo(demoIndex + 1), 6500);
     return () => window.clearTimeout(timer);
-  }, [applyDemo, demoIndex, isDemoCycling]);
+  }, [applyDemo, demoIndex, isDemoCycling, prefersReducedMotion]);
 
   useEffect(() => {
     if (!isAnalyzing) return;
@@ -445,7 +455,7 @@ export default function Home() {
           </div>
         </section>
 
-        <section id="verification-workspace" aria-labelledby="workspace-title" className="max-w-3xl mx-auto mb-8">
+        <section id="verification-workspace" aria-labelledby="workspace-title" className="max-w-3xl mx-auto mb-8" onFocusCapture={() => setIsDemoCycling(false)}>
           <div className="flex items-end justify-between gap-4 mb-3">
             <div>
               <p className="text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--accent-text)', letterSpacing: '0.1em' }}>
@@ -466,13 +476,13 @@ export default function Home() {
           </div>
 
           <div className="rounded-2xl p-4 sm:p-5 shadow-2xl" style={{ background: 'var(--bg-raised)', border: '1px solid var(--border)' }}>
-            <div className="flex gap-2 mb-3" role="tablist" aria-label="Workflow mode">
-              <button type="button" role="tab" onClick={() => setSelectedMode('research')} aria-selected={selectedMode === 'research'}
+            <div className="flex gap-2 mb-3" aria-label="Workflow mode">
+              <button type="button" onClick={() => setSelectedMode('research')} aria-pressed={selectedMode === 'research'}
                 className="inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 px-3 py-2 text-[11px] font-bold rounded-md tr"
                 style={{ background: selectedMode === 'research' ? 'var(--accent-dim)' : 'var(--bg-overlay)', color: selectedMode === 'research' ? 'var(--accent-text)' : 'var(--ink-2)', border: '1px solid var(--border-subtle)' }}>
                 <Search className="w-3 h-3" /> Research
               </button>
-              <button type="button" role="tab" onClick={() => setSelectedMode('audit')} aria-selected={selectedMode === 'audit'}
+              <button type="button" onClick={() => setSelectedMode('audit')} aria-pressed={selectedMode === 'audit'}
                 className="inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 px-3 py-2 text-[11px] font-bold rounded-md tr"
                 style={{ background: selectedMode === 'audit' ? 'var(--accent-dim)' : 'var(--bg-overlay)', color: selectedMode === 'audit' ? 'var(--accent-text)' : 'var(--ink-2)', border: '1px solid var(--border-subtle)' }}>
                 <Cpu className="w-3 h-3" /> Audit
@@ -488,7 +498,7 @@ export default function Home() {
                 id="research-query"
                 rows={selectedMode === 'audit' ? 5 : 4}
                 value={query}
-                onChange={(e) => setQuery(e.target.value)}
+                onChange={(e) => { setIsDemoCycling(false); setQuery(e.target.value); }}
                 disabled={isAnalyzing}
                 placeholder={selectedMode === 'audit' ? 'Paste the answer or report you want to check...' : 'Enter a claim or question to verify...'}
                 className="w-full h-32 rounded-lg px-4 py-3 text-sm resize-none overflow-y-auto tr disabled:opacity-40"
@@ -541,11 +551,12 @@ export default function Home() {
                       style={{ color: 'var(--ink-2)', background: 'var(--bg-overlay)', border: '1px solid var(--border-subtle)' }}>
                       <ChevronRight className="w-3.5 h-3.5" />
                     </button>
-                    <button type="button" onClick={() => setIsDemoCycling((current) => !current)}
-                      className="inline-flex min-h-8 items-center gap-1.5 px-2.5 rounded-md text-[10px] font-semibold tr"
+                    <button type="button" onClick={() => setIsDemoCycling((current) => !current)} disabled={prefersReducedMotion}
+                      aria-label={prefersReducedMotion ? 'Auto-cycle disabled because reduced motion is enabled' : isDemoCycling ? 'Pause demo cycle' : 'Start demo cycle'}
+                      className="inline-flex min-h-8 items-center gap-1.5 px-2.5 rounded-md text-[10px] font-semibold tr disabled:opacity-40"
                       style={{ color: isDemoCycling ? 'var(--accent-text)' : 'var(--ink-2)', background: isDemoCycling ? 'var(--accent-dim)' : 'var(--bg-overlay)', border: '1px solid var(--border-subtle)' }}>
                       {isDemoCycling ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
-                      {isDemoCycling ? 'Pause cycle' : 'Cycle demos'}
+                      {prefersReducedMotion ? 'Motion off' : isDemoCycling ? 'Pause cycle' : 'Cycle demos'}
                     </button>
                   </div>
                 </div>
