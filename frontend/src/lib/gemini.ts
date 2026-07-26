@@ -197,20 +197,20 @@ async function callGeminiJson<T>(
 
     // Fallback ONLY for retryable provider errors (429, 500, 502, 503, timeout, network)
     if (categorized.kind === 'retryable-provider') {
-      // Pause 2s before trying secondary key
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      // Pause 3s before trying secondary key
+      await new Promise((resolve) => setTimeout(resolve, 3000));
       try {
         const data = await tryCall(secondaryKey);
         return { data, usedFallback: true };
       } catch {
-        // Pause 5s and retry primary key
-        await new Promise((resolve) => setTimeout(resolve, 5000));
+        // Pause 10s and retry primary key
+        await new Promise((resolve) => setTimeout(resolve, 10000));
         try {
           const data = await tryCall(primaryKey);
           return { data, usedFallback: false };
         } catch {
-          // Pause 5s and retry secondary key final time
-          await new Promise((resolve) => setTimeout(resolve, 5000));
+          // Pause 10s and retry secondary key final time
+          await new Promise((resolve) => setTimeout(resolve, 10000));
           try {
             const data = await tryCall(secondaryKey);
             return { data, usedFallback: true };
