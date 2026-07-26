@@ -22,6 +22,7 @@ import {
   FileCode,
   Download,
   ArrowRight,
+  Play,
   Copy,
   Check,
   Cpu,
@@ -363,69 +364,150 @@ export default function Home() {
     ? Math.round(run!.claims.reduce((a, c) => a + pct(c.confidence), 0) / total)
     : 0;
 
+  const jumpTo = (id: string, focus = false) => {
+    const target = document.getElementById(id);
+    if (!target) return;
+    if (focus) inputRef.current?.focus({ preventScroll: true });
+    const top = Math.max(0, target.getBoundingClientRect().top + window.scrollY - 96);
+    window.scrollTo({ top, behavior: focus ? 'instant' : 'smooth' });
+  };
   return (
-    <div className="min-h-screen flex flex-col overflow-x-hidden" style={{ background: 'var(--bg)' }}>
-      <header className="sticky top-0 z-20 backdrop-blur-md"
-              style={{ background: 'oklch(0.14 0.008 260 / 0.86)', borderBottom: '1px solid var(--border-subtle)' }}>
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <ShieldCheck className="w-4 h-4" style={{ color: 'var(--accent)' }} aria-hidden="true" />
-            <span className="text-sm font-bold tracking-tight" style={{ color: 'var(--ink)' }}>
-              VerityGraph
-            </span>
-            <span className="hidden sm:inline-flex text-[10px] font-mono px-2 py-0.5 rounded"
-                  style={{ color: 'var(--ink-3)', background: 'var(--bg-overlay)' }}>
-              evidence workspace
-            </span>
+    <div className="app-shell" id="top">
+      <header className="site-header">
+        <div className="site-header__inner">
+          <button type="button" className="brand-lockup" onClick={() => jumpTo('top')} aria-label="Back to VerityGraph home">
+            <ShieldCheck aria-hidden="true" />
+            <span>VerityGraph</span>
+          </button>
+          <nav className="site-nav" aria-label="Primary navigation">
+            <button type="button" onClick={() => jumpTo('product')}>Product</button>
+            <button type="button" onClick={() => jumpTo('how-it-works')}>How it works</button>
+            <button type="button" onClick={() => jumpTo('evidence-model')}>Evidence model</button>
+          </nav>
+          <div className="site-actions">
+            <button type="button" className="site-button site-button--quiet" onClick={() => jumpTo('demo-video')}>
+              View demo
+            </button>
+            <button type="button" className="site-button site-button--primary" onClick={() => jumpTo('verification-workspace', true)}>
+              Get started <ArrowRight aria-hidden="true" />
+            </button>
           </div>
-          <span className="text-[10px] font-mono" style={{ color: 'var(--ink-3)' }}>
-            claim-level verification
-          </span>
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-8 sm:py-10 flex-1 w-full">
-        <section aria-labelledby="landing-title" className="max-w-5xl mx-auto text-center mb-14 anim-in">
-          <div className="inline-flex items-center gap-2 rounded-full px-3 py-1 mb-5"
-               style={{ color: 'var(--accent-text)', background: 'var(--accent-dim)', border: '1px solid oklch(0.34 0.08 30)' }}>
-            <Cpu className="w-3.5 h-3.5" />
-            <span className="text-[11px] font-bold">Evidence checker for research and AI answers</span>
+      <main className="landing-main">
+        <section id="product" aria-labelledby="landing-title" className="hero-section">
+          <div className="hero-copy">
+            <p className="hero-kicker"><span aria-hidden="true" /> Evidence-first research system</p>
+            <h1 id="landing-title">Turn confident answers into <em>checkable evidence.</em></h1>
+            <p className="hero-description">
+              VerityGraph turns a research question or pasted AI answer into a claim-level evidence trail you can inspect, challenge, and share.
+            </p>
+            <div className="hero-actions">
+              <button type="button" className="site-button site-button--primary site-button--large" onClick={() => jumpTo('verification-workspace', true)}>
+                Get started <ArrowRight aria-hidden="true" />
+              </button>
+              <button type="button" className="site-button site-button--outline site-button--large" onClick={() => jumpTo('demo-video')}>
+                <Play aria-hidden="true" /> View demo
+              </button>
+            </div>
+            <p className="hero-note"><ShieldCheck aria-hidden="true" /> Research mode, Audit mode, and a deterministic Demo mode.</p>
           </div>
-          <h1 id="landing-title" className="text-4xl sm:text-6xl lg:text-7xl font-bold tracking-tight leading-[0.96] max-w-4xl mx-auto"
-              style={{ color: 'var(--ink)', letterSpacing: '-0.06em' }}>
-            Make every claim carry its evidence.
-          </h1>
-          <p className="text-base sm:text-lg leading-relaxed mt-5 max-w-2xl mx-auto" style={{ color: 'var(--ink-2)' }}>
-            Turn a research query or AI answer into a clear evidence trail you can inspect, challenge, and share.
-          </p>
-          <div className="flex flex-wrap items-center justify-center gap-2.5 mt-7">
-            <button type="button"
-              onClick={() => { inputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }); inputRef.current?.focus(); }}
-              className="inline-flex min-h-11 items-center justify-center gap-2 px-5 py-2.5 text-sm font-semibold rounded-lg tr"
-              style={{ background: 'var(--accent)', color: '#fff' }}>
-              Start verifying <ArrowRight className="w-3.5 h-3.5" />
-            </button>
-            <button type="button" onClick={loadDemo}
-              className="inline-flex min-h-11 items-center justify-center gap-2 px-5 py-2.5 text-sm font-semibold rounded-lg tr"
-              style={{ background: 'var(--bg-raised)', color: 'var(--ink-2)', border: '1px solid var(--border)' }}>
-              <Database className="w-3.5 h-3.5" /> See a demo
-            </button>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-10 text-left">
-            {[
-              ['Understand the claim', 'Break broad answers into checkable statements.'],
-              ['See the evidence', 'Compare supporting and challenging source passages.'],
-              ['Know what to do next', 'Find the missing proof and the next best query.'],
-            ].map(([title, body]) => (
-              <div key={title} className="rounded-xl p-4" style={{ background: 'var(--bg-raised)', border: '1px solid var(--border-subtle)' }}>
-                <span className="text-xs font-bold block" style={{ color: 'var(--ink)' }}>{title}</span>
-                <span className="text-[11px] leading-relaxed block mt-1.5" style={{ color: 'var(--ink-3)' }}>{body}</span>
+
+          <div className="hero-proof" aria-label="Example VerityGraph verification result">
+            <div className="hero-proof__top">
+              <span>VERITYGRAPH / LIVE PROOF</span>
+              <span className="hero-proof__status"><span aria-hidden="true" /> Ready</span>
+            </div>
+            <div className="hero-proof__query">
+              <span>QUESTION</span>
+              <strong>Does this claim hold up?</strong>
+            </div>
+            <div className="hero-proof__result">
+              <div>
+                <span className="hero-proof__eyebrow">CLAIM 01 / VERDICT</span>
+                <strong>Supported with caveats</strong>
+                <p>Evidence agrees, but the next best query still matters.</p>
               </div>
-            ))}
+              <span className="hero-proof__confidence">82%</span>
+            </div>
+            <div className="hero-proof__trail">
+              <div><span className="trail-dot trail-dot--support" /> 2 supporting sources <small>2 origins</small></div>
+              <div><span className="trail-dot trail-dot--challenge" /> 1 challenge to inspect <small>next query ready</small></div>
+            </div>
+            <div className="hero-proof__footer">
+              <span>source independence</span>
+              <strong>visible by design</strong>
+            </div>
           </div>
         </section>
 
-        <section id="verification-workspace" aria-labelledby="workspace-title" className="max-w-3xl mx-auto mb-8">
+        <section className="capability-band" aria-label="VerityGraph capabilities">
+          <div><strong>Claim-level</strong><span>Break broad answers into checkable statements.</span></div>
+          <div><strong>Evidence-first</strong><span>Compare supporting and challenging passages.</span></div>
+          <div><strong>Actionable</strong><span>See missing proof and the next-best query.</span></div>
+        </section>
+
+        <section id="how-it-works" className="story-section" aria-labelledby="story-title">
+          <div className="section-heading">
+            <p className="section-kicker">How the product works</p>
+            <h2 id="story-title">One clear path from question to proof.</h2>
+            <p>VerityGraph keeps the explanation close to the claim, so the result is useful to a researcher—not just impressive at first glance.</p>
+          </div>
+          <div className="story-steps">
+            <article className="story-step">
+              <span className="story-step__number">01</span>
+              <h3>Ask or paste</h3>
+              <p>Start with a research question, hypothesis, or AI-generated answer.</p>
+            </article>
+            <article className="story-step story-step--active">
+              <span className="story-step__number">02</span>
+              <h3>Inspect the evidence</h3>
+              <p>See support, challenge, confidence factors, source origins, and audit anchors.</p>
+            </article>
+            <article className="story-step">
+              <span className="story-step__number">03</span>
+              <h3>Act on the verdict</h3>
+              <p>Re-verify one claim, follow the next-best query, or export a proof report.</p>
+            </article>
+          </div>
+        </section>
+
+        <section id="evidence-model" className="evidence-section" aria-labelledby="evidence-title">
+          <div className="evidence-section__intro">
+            <p className="section-kicker">The evidence model</p>
+            <h2 id="evidence-title">Uncertainty stays visible.</h2>
+            <p>Every result makes room for what supports the claim, what challenges it, and what is still missing.</p>
+          </div>
+          <div className="evidence-ledger">
+            <div><span className="ledger-mark ledger-mark--support">✓</span><strong>Supported</strong><small>Evidence agrees with the claim.</small></div>
+            <div><span className="ledger-mark ledger-mark--partial">~</span><strong>Partial</strong><small>Support exists, but the basis is limited.</small></div>
+            <div><span className="ledger-mark ledger-mark--challenge">×</span><strong>Challenged</strong><small>Contradicting evidence is visible.</small></div>
+            <div><span className="ledger-mark ledger-mark--missing">?</span><strong>Insufficient</strong><small>The next proof requirement is explicit.</small></div>
+          </div>
+        </section>
+
+        <section id="demo-video" className="demo-section" aria-labelledby="demo-title">
+          <div className="demo-copy">
+            <p className="section-kicker">See the workflow</p>
+            <h2 id="demo-title">A proof trail, not a black box.</h2>
+            <p>We are preparing a short walkthrough of the research, audit, and re-verification flows.</p>
+          </div>
+          <div className="demo-placeholder">
+            <div className="demo-placeholder__grid" aria-hidden="true" />
+            <button type="button" className="demo-play" aria-label="Demo video coming soon" onClick={() => jumpTo('verification-workspace', true)}>
+              <Play aria-hidden="true" />
+            </button>
+            <div className="demo-placeholder__label">
+              <span>VIDEO PLACEHOLDER</span>
+              <strong>Product walkthrough coming soon.</strong>
+              <small>Try the deterministic demo below while we record it.</small>
+            </div>
+          </div>
+        </section>
+
+
+        <section id="verification-workspace" aria-labelledby="workspace-title" className="workspace-section max-w-3xl mx-auto mb-8">
           <div className="flex items-end justify-between gap-4 mb-3">
             <div>
               <p className="text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--accent-text)', letterSpacing: '0.1em' }}>
