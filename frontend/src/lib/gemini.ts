@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI } from '@google/genai';
 import { z } from 'zod';
 import { RawSource, CandidateEvidence } from './tavily';
 import { canonicalizeUrl } from './verificationRules';
@@ -100,14 +100,115 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs = GEMINI_TIMEOUT_MS): Pro
   });
 }
 
-function numericStatus(error: unknown): number | null {
-  if (!error || typeof error !== 'object') return null;
-  for (const key of ['status', 'statusCode', 'httpStatus']) {
-    const value = (error as Record<string, unknown>)[key];
-    if (typeof value === 'number') return value;
-    if (typeof value === 'string' && /^\d{3}$/.test(value)) return Number(value);
+function valueAtPath(value: unknown, path: string[]): unknown {
+  let current = value;
+  for (const key of path) {
+    if (!current || typeof current !== 'object') return undefined;
+    current = (current as Record<string, unknown>)[key];
   }
+  return current;
+}
+
+function statusValue(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isInteger(value)) return value;
+  if (typeof value === 'string' && /^\d{3}$/.test(value)) return Number(value);
   return null;
+}
+
+function safeProviderCode(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const code = value.trim();
+  return /^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(code) ? code : null;
+}
+
+export type GeminiDiagnosticCategory =
+  | 'success'
+  | 'authentication'
+  | 'permission'
+  | 'model-access'
+  | 'quota'
+  | 'regional-or-billing'
+  | 'invalid-request'
+  | 'timeout'
+  | 'network'
+  | 'structured-output'
+  | 'unknown';
+
+export interface GeminiErrorDetails {
+  httpStatus: number | null;
+  providerErrorCode: string | null;
+  category: Exclude<GeminiDiagnosticCategory, 'success'>;
+  retryable: boolean;
+}
+
+const STATUS_PATHS = [
+  ['status'],
+  ['statusCode'],
+  ['httpStatus'],
+  ['error', 'status'],
+  ['error', 'code'],
+  ['response', 'status'],
+  ['sdkHttpResponse', 'status'],
+];
+
+const CODE_PATHS = [
+  ['code'],
+  ['error', 'code'],
+  ['error', 'status'],
+  ['response', 'status'],
+  ['sdkHttpResponse', 'status'],
+];
+
+function errorText(error: unknown): string {
+  if (!error || typeof error !== 'object') return String(error);
+  return [
+    (error as Record<string, unknown>).message,
+    valueAtPath(error, ['error', 'message']),
+    valueAtPath(error, ['response', 'statusText']),
+  ]
+    .filter((value): value is string => typeof value === 'string')
+    .join(' ')
+    .toLowerCase();
+}
+
+export function inspectGeminiError(error: unknown, structuredOutput = false): GeminiErrorDetails {
+  const httpStatus = STATUS_PATHS.map((path) => statusValue(valueAtPath(error, path))).find(
+    (status): status is number => status !== null
+  ) ?? null;
+  const providerErrorCode = CODE_PATHS.map((path) => safeProviderCode(valueAtPath(error, path))).find(
+    (code): code is string => code !== null
+  ) ?? null;
+  const code = providerErrorCode?.toUpperCase() ?? '';
+  const text = errorText(error);
+
+  if (error instanceof Error && error.name === 'TimeoutError') {
+    return { httpStatus, providerErrorCode, category: 'timeout', retryable: true };
+  }
+  if (/\b(?:econnreset|etimedout|econnrefused|enotfound|eai_again)\b/.test(text) || text.includes('network') || text.includes('fetch failed') || text.includes('connection')) {
+    return { httpStatus, providerErrorCode, category: 'network', retryable: true };
+  }
+  if (httpStatus === 401 || code === 'UNAUTHENTICATED' || code === 'INVALID_ARGUMENT_API_KEY') {
+    return { httpStatus, providerErrorCode, category: 'authentication', retryable: false };
+  }
+  if (httpStatus === 403 || code === 'PERMISSION_DENIED') {
+    return { httpStatus, providerErrorCode, category: 'permission', retryable: false };
+  }
+  if (httpStatus === 404 || code === 'NOT_FOUND') {
+    return { httpStatus, providerErrorCode, category: 'model-access', retryable: false };
+  }
+  if (httpStatus === 429 || code === 'RESOURCE_EXHAUSTED' || text.includes('quota') || text.includes('rate limit')) {
+    return { httpStatus, providerErrorCode, category: 'quota', retryable: true };
+  }
+  if (code === 'FAILED_PRECONDITION' || text.includes('failed_precondition')) {
+    return { httpStatus, providerErrorCode, category: 'regional-or-billing', retryable: false };
+  }
+  if (httpStatus === 400 || code === 'INVALID_ARGUMENT' || /\b(?:400|invalid request)\b/.test(text)) {
+    return { httpStatus, providerErrorCode, category: structuredOutput ? 'structured-output' : 'invalid-request', retryable: false };
+  }
+  if (httpStatus !== null && [500, 502, 503].includes(httpStatus) || /(?:\b500\b|\b502\b|\b503\b|internal|unavailable|overloaded)/.test(text) || ['INTERNAL', 'UNAVAILABLE', 'ABORTED'].includes(code)) {
+    return { httpStatus, providerErrorCode, category: 'unknown', retryable: true };
+  }
+  return { httpStatus, providerErrorCode, category: 'unknown', retryable: false };
 }
 
 function classifyError(error: unknown): CategorizedError {
@@ -122,33 +223,53 @@ function classifyError(error: unknown): CategorizedError {
     return error as CategorizedError;
   }
 
-  const message = error instanceof Error ? error.message : String(error);
-  const name = error instanceof Error ? error.name : '';
-  const status = numericStatus(error);
-  if ([429, 500, 502, 503].includes(status ?? -1)) {
+  const details = inspectGeminiError(error);
+  if (details.retryable) {
     return { kind: 'retryable-provider', message: 'Temporary Gemini provider failure' };
   }
-  if (name === 'TimeoutError') {
-    return { kind: 'retryable-provider', message: 'Gemini provider timeout' };
-  }
-
-  const lower = message.toLowerCase();
   if (
-    /\b(?:429|500|502|503)\b/.test(lower) ||
-    /\b(?:econnreset|etimedout|econnrefused|enotfound|eai_again)\b/.test(lower) ||
-    lower.includes('network') ||
-    lower.includes('fetch failed') ||
-    lower.includes('connection')
+    details.category === 'authentication' ||
+    details.category === 'permission' ||
+    details.category === 'model-access' ||
+    details.category === 'regional-or-billing' ||
+    details.category === 'invalid-request'
   ) {
-    return { kind: 'retryable-provider', message: 'Temporary Gemini provider failure' };
-  }
-  if ([400, 401, 403, 404].includes(status ?? -1)) {
-    return { kind: 'non-retryable-provider', message: 'Invalid Gemini request or permissions' };
-  }
-  if (/\b(?:400|401|403|404)\b/.test(lower) || lower.includes('invalid model') || lower.includes('key not valid')) {
     return { kind: 'non-retryable-provider', message: 'Invalid Gemini request or permissions' };
   }
   return { kind: 'invalid-output', message: 'Gemini response processing failure' };
+}
+function safeFailureCategory(error: unknown): GeminiDiagnosticCategory {
+  if (
+    error &&
+    typeof error === 'object' &&
+    'kind' in error &&
+    error.kind === 'invalid-output'
+  ) {
+    return 'structured-output';
+  }
+  return inspectGeminiError(error, true).category;
+}
+function safeFailureDetail(error: unknown): string {
+  if (
+    error &&
+    typeof error === 'object' &&
+    'kind' in error &&
+    error.kind === 'invalid-output' &&
+    'message' in error &&
+    typeof error.message === 'string'
+  ) {
+    if (error.message === 'Empty model response') return 'structured-output:empty-response';
+    if (error.message === 'Invalid JSON model response') return 'structured-output:invalid-json';
+    if (error.message.startsWith('Invalid model response schema')) {
+      const path = error.message.split(':')[1]?.replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 120);
+      return path ? `structured-output:zod-schema:${path}` : 'structured-output:zod-schema';
+    }
+    if (error.message === 'Duplicate claims') return 'structured-output:duplicate-claims';
+    if (error.message === 'Paraphrased duplicate claims') return 'structured-output:duplicate-claims';
+    if (error.message === 'Identical support queries' || error.message === 'Identical challenge queries') return 'structured-output:duplicate-queries';
+    if (error.message === 'Empty normalized claim field') return 'structured-output:empty-field';
+  }
+  return safeFailureCategory(error);
 }
 export async function runGeminiWithFallback<T>(
   primaryCall: () => Promise<T>,
@@ -160,14 +281,14 @@ export async function runGeminiWithFallback<T>(
     return { data: await primaryCall(), usedFallback: false };
   } catch (primaryError) {
     if (classifyError(primaryError).kind !== 'retryable-provider') {
-      throw new PipelineError(stage, `Gemini service execution failed during ${stage}.`);
+      throw new PipelineError(stage, `Gemini service execution failed during ${stage} (${safeFailureDetail(primaryError)}).`);
     }
 
     await new Promise((resolve) => setTimeout(resolve, fallbackDelayMs));
     try {
       return { data: await secondaryCall(), usedFallback: true };
-    } catch {
-      throw new PipelineError(stage, `Gemini service failed during ${stage} across both configured keys.`);
+    } catch (secondaryError) {
+      throw new PipelineError(stage, `Gemini service failed during ${stage} across both configured keys (${safeFailureDetail(secondaryError)}).`);
     }
   }
 }
@@ -180,7 +301,7 @@ async function callGeminiJson<T>(
   primaryKey: string,
   secondaryKey: string,
   modelName: string,
-  responseSchema?: Record<string, unknown>,
+  responseJsonSchema?: Record<string, unknown>,
   customValidator?: (value: T) => void
 ): Promise<GeminiCallResult<T>> {
   const tryCall = async (apiKey: string): Promise<T> => {
@@ -191,7 +312,7 @@ async function callGeminiJson<T>(
         contents: prompt,
         config: {
           responseMimeType: 'application/json',
-          ...(responseSchema ? { responseSchema } : {}),
+          ...(responseJsonSchema ? { responseJsonSchema } : {}),
         },
       })
     );
@@ -209,7 +330,15 @@ async function callGeminiJson<T>(
 
     const parsed = schema.safeParse(rawJson);
     if (!parsed.success) {
-      throw { kind: 'invalid-output', message: 'Invalid model response schema' } as CategorizedError;
+      const issuePaths = parsed.error.issues
+        .map((issue) => issue.path.join('.'))
+        .filter(Boolean)
+        .slice(0, 5)
+        .join(',');
+      throw {
+        kind: 'invalid-output',
+        message: issuePaths ? `Invalid model response schema:${issuePaths}` : 'Invalid model response schema',
+      } as CategorizedError;
     }
     customValidator?.(parsed.data);
     return parsed.data;
@@ -266,30 +395,32 @@ function validateClaims(claims: ExtractedClaim[]) {
   }
 }
 
-const researchResponseSchema = {
-  type: Type.ARRAY,
+const researchResponseJsonSchema = {
+  type: 'array',
   items: {
-    type: Type.OBJECT,
+    type: 'object',
     properties: {
-      text: { type: Type.STRING },
-      supportQuery: { type: Type.STRING },
-      challengeQuery: { type: Type.STRING },
+      text: { type: 'string', minLength: 10, maxLength: 500 },
+      supportQuery: { type: 'string', minLength: 3, maxLength: 300 },
+      challengeQuery: { type: 'string', minLength: 3, maxLength: 300 },
     },
     required: ['text', 'supportQuery', 'challengeQuery'],
+    additionalProperties: false,
   },
 };
 
-const auditResponseSchema = {
-  type: Type.ARRAY,
+const auditResponseJsonSchema = {
+  type: 'array',
   items: {
-    type: Type.OBJECT,
+    type: 'object',
     properties: {
-      text: { type: Type.STRING },
-      sourceQuote: { type: Type.STRING },
-      supportQuery: { type: Type.STRING },
-      challengeQuery: { type: Type.STRING },
+      text: { type: 'string', minLength: 10, maxLength: 500 },
+      sourceQuote: { type: 'string', minLength: 10, maxLength: 600 },
+      supportQuery: { type: 'string', minLength: 3, maxLength: 300 },
+      challengeQuery: { type: 'string', minLength: 3, maxLength: 300 },
     },
     required: ['text', 'sourceQuote', 'supportQuery', 'challengeQuery'],
+    additionalProperties: false,
   },
 };
 
@@ -312,7 +443,7 @@ export async function extractClaimsWithGemini(
     primaryKey,
     secondaryKey,
     modelName,
-    workflowMode === 'audit' ? auditResponseSchema : researchResponseSchema,
+    workflowMode === 'audit' ? auditResponseJsonSchema : researchResponseJsonSchema,
     validateClaims
   );
 }
@@ -333,28 +464,31 @@ export async function verifyClaimWithGemini(
     .map((evidence) => `[Source ID: ${evidence.id}]\nCandidate Type: ${evidence.candidateType}\nEvidence Basis: ${evidence.evidenceBasis}\nTitle: ${evidence.title}\nDomain: ${evidence.domain}\nPassage: ${evidence.excerpt}`)
     .join('\n\n');
   const prompt = `You are a strict evidence verifier.\nClaim to verify: "${claimText}"\n\nRetrieved Evidence Sources:\n${sourcesList || 'No evidence sources available.'}\n\nEvaluate the claim ONLY using supplied passages. Return verdict, confidence from 0 to 100, concise explanation, missingEvidence, nextBestQuery, and evidence items containing only supplied source IDs, stance, and relevanceScore. A support candidate is not automatically supporting evidence. A challenge candidate is not automatically contradictory evidence. Return only JSON.`;
-  const responseSchema = {
-    type: Type.OBJECT,
+  const verificationResponseJsonSchema = {
+    type: 'object',
     properties: {
-      verdict: { type: Type.STRING, enum: ['supported', 'contradicted', 'partial', 'insufficient'] },
-      confidence: { type: Type.NUMBER },
-      explanation: { type: Type.STRING },
-      missingEvidence: { type: Type.STRING },
-      nextBestQuery: { type: Type.STRING },
+      verdict: { type: 'string', enum: ['supported', 'contradicted', 'partial', 'insufficient'] },
+      confidence: { type: 'number' },
+      explanation: { type: 'string', minLength: 10, maxLength: 800 },
+      missingEvidence: { type: 'string', minLength: 10, maxLength: 400 },
+      nextBestQuery: { type: 'string', minLength: 3, maxLength: 300 },
       evidence: {
-        type: Type.ARRAY,
+        type: 'array',
         items: {
-          type: Type.OBJECT,
+          type: 'object',
           properties: {
-            sourceId: { type: Type.STRING },
-            stance: { type: Type.STRING, enum: ['support', 'contradict', 'neutral'] },
-            relevanceScore: { type: Type.NUMBER },
+            sourceId: { type: 'string', minLength: 1 },
+            stance: { type: 'string', enum: ['support', 'contradict', 'neutral'] },
+            relevanceScore: { type: 'number', minimum: 0, maximum: 100 },
           },
           required: ['sourceId', 'stance', 'relevanceScore'],
+          additionalProperties: false,
         },
+        maxItems: 6,
       },
     },
     required: ['verdict', 'confidence', 'explanation', 'missingEvidence', 'nextBestQuery', 'evidence'],
+    additionalProperties: false,
   };
 
   const { data: parsed, usedFallback } = await callGeminiJson(
@@ -364,7 +498,7 @@ export async function verifyClaimWithGemini(
     primaryKey,
     secondaryKey,
     modelName,
-    responseSchema
+    verificationResponseJsonSchema
   );
 
   const candidateMap = new Map(candidateEvidence.map((candidate) => [candidate.id, candidate]));
@@ -442,10 +576,11 @@ export async function synthesizeReportWithGemini(
     .map((claim) => `- Claim: "${claim.text}"\n  Verdict: ${claim.verdict.toUpperCase()} (${Math.round(claim.confidence * 100)}%)\n  Explanation: ${claim.explanation}`)
     .join('\n\n');
   const prompt = `You are a research synthesis agent.\nUser Query / Audited Topic: "${query}"\n\nVerified Claims:\n${claimSummary}\n\nWrite a concise 2–4 sentence executive summary. Acknowledge uncertainty and contradictions. Do not introduce facts not listed above. Return only JSON with summary.`;
-  const responseSchema = {
-    type: Type.OBJECT,
-    properties: { summary: { type: Type.STRING } },
+  const synthesisResponseJsonSchema = {
+    type: 'object',
+    properties: { summary: { type: 'string', minLength: 40, maxLength: 1200 } },
     required: ['summary'],
+    additionalProperties: false,
   };
   const { data, usedFallback } = await callGeminiJson(
     prompt,
@@ -454,7 +589,7 @@ export async function synthesizeReportWithGemini(
     primaryKey,
     secondaryKey,
     modelName,
-    responseSchema
+    synthesisResponseJsonSchema
   );
   return { data: data.summary, usedFallback };
 }

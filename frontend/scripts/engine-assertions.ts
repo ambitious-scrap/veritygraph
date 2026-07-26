@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   anchorAuditQuotes,
+  attachAuditAnchors,
 } from '../src/lib/quoteAnchoring.ts';
 import {
   analyzeSourceIndependence,
@@ -13,7 +14,7 @@ import {
   normalizeTitle,
   tokenizeTitle,
 } from '../src/lib/verificationRules.ts';
-import { runGeminiWithFallback } from '../src/lib/gemini.ts';
+import { inspectGeminiError, runGeminiWithFallback } from '../src/lib/gemini.ts';
 import type { Claim, Evidence } from '../src/lib/types.ts';
 
 const baseEvidence = (overrides: Partial<Evidence> = {}): Evidence => ({
@@ -83,10 +84,35 @@ function testQuoteAnchoring() {
   ]);
   assert.equal(repeated.first.startIndex, 0);
   assert.equal(repeated.second.startIndex, 13);
+  const duplicateAnchors = anchorAuditQuotes('Repeat here. Repeat here.', [
+    { id: 'claim-1', sourceQuote: 'Repeat here.' },
+    { id: 'claim-2', sourceQuote: 'Repeat here.' },
+    { id: 'claim-3', sourceQuote: 'Repeat here.' },
+  ]);
+  const auditClaims = [
+    { sourceQuote: 'Repeat here.' },
+    { sourceQuote: 'Repeat here.' },
+    { sourceQuote: 'Repeat here.' },
+  ];
+  const attachedAudit = attachAuditAnchors('audit', auditClaims, duplicateAnchors);
+  assert.equal(attachedAudit[0].auditAnchor?.startIndex, 0);
+  assert.equal(attachedAudit[1].auditAnchor?.startIndex, 13);
+  assert.equal(attachedAudit[2].auditAnchor?.matchStatus, 'unmatched');
+  const attachedResearch = attachAuditAnchors('research', auditClaims, duplicateAnchors);
+  assert.equal('auditAnchor' in attachedResearch[0], false);
 }
 
 function testSourceIndependence() {
-  assert.equal(canonicalizeUrl('https://WWW.Example.org/a/#fragment'), 'https://example.org/a');
+  assert.equal(canonicalizeUrl('https://WWW.Example.org/a/#fragment'), 'https://example.org/a/');
+  assert.equal(
+    canonicalizeUrl('HTTPS://WWW.Example.org/Report?b=Two&utm_source=mail&a=One#fragment'),
+    'https://example.org/Report?a=One&b=Two'
+  );
+  assert.notEqual(canonicalizeUrl('https://example.org/Report'), canonicalizeUrl('https://example.org/report'));
+  assert.equal(
+    canonicalizeUrl('https://example.org/Report?x=One&y=two'),
+    canonicalizeUrl('https://example.org/Report?y=two&x=One')
+  );
   assert.equal(normalizeDomain('https://www.Example.org/a'), 'example.org');
   assert.equal(normalizeTitle('  A Report: On Coffee! '), 'a report on coffee');
   assert.equal(jaccardSimilarity(tokenizeTitle('Coffee mortality report'), tokenizeTitle('Coffee mortality report results')), 2 / 3);
@@ -129,7 +155,45 @@ function testMetricsAndManifestInvariants() {
   assert.equal(metrics.searchQueryCount, 1);
   assert.ok(metrics.sourcesScanned >= metrics.retainedEvidenceCount);
   assert.ok(Object.values(metrics).every((value) => typeof value === 'number' && value >= 0));
+  const duplicateMetrics = calculateEvidenceMetrics(
+    [],
+    [[]],
+    [{
+      ...baseClaim('pass'),
+      evidence: [
+        baseEvidence({ id: 'snippet', url: 'https://example.org/Report', evidenceBasis: 'search-snippet' }),
+        baseEvidence({ id: 'focused', url: 'https://example.org/Report?utm_source=mail', evidenceBasis: 'focused-source-extract' }),
+      ],
+    }],
+    10
+  );
+  assert.equal(duplicateMetrics.retainedEvidenceCount, 1);
+  assert.equal(duplicateMetrics.focusedExtractCount, 1);
+  assert.equal(duplicateMetrics.snippetFallbackSources, 0);
 }
+function testGeminiErrorClassification() {
+  const transient = inspectGeminiError({ error: { status: 503, code: 'UNAVAILABLE' } });
+  assert.equal(transient.httpStatus, 503);
+  assert.equal(transient.retryable, true);
+  assert.equal(transient.category, 'unknown');
+
+  const failedPrecondition = inspectGeminiError({
+    response: { status: 400 },
+    error: { status: 'FAILED_PRECONDITION', code: 'FAILED_PRECONDITION' },
+  });
+  assert.equal(failedPrecondition.httpStatus, 400);
+  assert.equal(failedPrecondition.retryable, false);
+  assert.equal(failedPrecondition.category, 'regional-or-billing');
+
+  const modelAccess = inspectGeminiError({ sdkHttpResponse: { status: 404 } });
+  assert.equal(modelAccess.category, 'model-access');
+  assert.equal(modelAccess.retryable, false);
+
+  const quota = inspectGeminiError({ error: { code: 'RESOURCE_EXHAUSTED' } });
+  assert.equal(quota.category, 'quota');
+  assert.equal(quota.retryable, true);
+}
+
 async function testGeminiFallbackBounds() {
   let primaryCalls = 0;
   let secondaryCalls = 0;
@@ -196,6 +260,7 @@ async function main() {
   testSourceIndependence();
   testBuildRules();
   testMetricsAndManifestInvariants();
+  testGeminiErrorClassification();
   await testGeminiFallbackBounds();
   console.log('engine assertions: PASS');
 }

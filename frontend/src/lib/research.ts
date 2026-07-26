@@ -1,5 +1,5 @@
 import { getEnv } from './env';
-import { anchorAuditQuotes } from './quoteAnchoring';
+import { anchorAuditQuotes, attachAuditAnchors } from './quoteAnchoring';
 import {
   searchInitialSources,
   searchClaimEvidence,
@@ -10,7 +10,6 @@ import {
   extractClaimsWithGemini,
   verifyClaimWithGemini,
   synthesizeReportWithGemini,
-  ExtractedClaim,
 } from './gemini';
 import {
   AgentTraceStep,
@@ -25,8 +24,8 @@ import {
   calculateEvidenceMetrics,
   calculateOverallBuildResult,
   classifyClaimBuildStatus,
+  EvidenceMetrics,
 } from './verificationRules';
-
 export const PIPELINE_VERSION = '2.0';
 export const BUILD_RULES_VERSION = '1.0';
 export const SOURCE_INDEPENDENCE_VERSION = '1.0';
@@ -61,14 +60,10 @@ function traceStep(
 function buildManifest(
   workflowMode: WorkflowMode,
   model: string,
-  run: Pick<ResearchRun, 'claims' | 'metrics' | 'providerMetadata'>,
+  run: Pick<ResearchRun, 'claims' | 'providerMetadata'> & { metrics: EvidenceMetrics },
   trace: AgentTraceStep[]
 ) {
-  const focusedExtractCount = run.claims.reduce(
-    (count, claim) => count + claim.evidence.filter((evidence) => evidence.evidenceBasis === 'focused-source-extract').length,
-    0
-  );
-  const retainedEvidenceCount = run.claims.reduce((count, claim) => count + claim.evidence.length, 0);
+  const { retainedEvidenceCount, extractedSources, snippetFallbackSources } = run.metrics;
   return {
     manifestVersion: '1.0' as const,
     pipelineVersion: PIPELINE_VERSION,
@@ -80,11 +75,8 @@ function buildManifest(
     claimCount: run.claims.length,
     sourcesScanned: run.metrics.sourcesScanned,
     retainedEvidenceCount,
-    focusedExtractCount,
-    snippetFallbackCount: run.claims.reduce(
-      (count, claim) => count + claim.evidence.filter((evidence) => evidence.evidenceBasis === 'search-snippet').length,
-      0
-    ),
+    focusedExtractCount: extractedSources,
+    snippetFallbackCount: snippetFallbackSources,
     distinctDomains: run.metrics.distinctDomains,
     fallbackUsed: run.providerMetadata.fallbackUsed,
     stageDurationsMs: Object.fromEntries(trace.map((step) => [step.role, step.durationMs])),
@@ -110,14 +102,6 @@ function attachClaimBuildState(claim: Omit<Claim, 'sourceIndependence' | 'claimB
   };
 }
 
-function auditAnchorForClaim(
-  workflowMode: WorkflowMode,
-  originalText: string,
-  extractedClaim: ExtractedClaim
-) {
-  if (workflowMode !== 'audit' || !extractedClaim.sourceQuote) return undefined;
-  return anchorAuditQuotes(originalText, [{ id: 'claim', sourceQuote: extractedClaim.sourceQuote }]).claim;
-}
 
 export async function runResearchPipeline(
   request: ResearchApiRequest
@@ -150,24 +134,34 @@ export async function runResearchPipeline(
   usedFallback ||= extraction.usedFallback;
   const extractedClaims = extraction.data;
   trace.push(traceStep('stage-2', 'claim-decomposer', 'Gemini atomic claim extraction', extraction.usedFallback ? 'fallback' : 'completed', Date.now() - extractionStartedAt, workflowMode === 'audit' ? 'Claims were extracted from the pasted answer only.' : 'Claims were extracted from the query and initial sources.', 1, extractedClaims.length));
+  const auditAnchors = workflowMode === 'audit'
+    ? anchorAuditQuotes(
+        inputText,
+        extractedClaims.map((claim, index) => ({
+          id: `claim-${index + 1}`,
+          sourceQuote: claim.sourceQuote ?? '',
+        }))
+      )
+    : {};
+  const claimsWithAnchors = attachAuditAnchors(workflowMode, extractedClaims, auditAnchors);
 
   const evidenceSearchStartedAt = Date.now();
   const rawCandidatesPerClaim = await Promise.all(
-    extractedClaims.map((claim, index) => searchClaimEvidence(claim.supportQuery, claim.challengeQuery, env.TAVILY_API_KEY, index + 1))
+    claimsWithAnchors.map((claim, index) => searchClaimEvidence(claim.supportQuery, claim.challengeQuery, env.TAVILY_API_KEY, index + 1))
   );
   trace.push(traceStep('stage-3', 'challenger', 'Support and challenge evidence retrieval', 'completed', Date.now() - evidenceSearchStartedAt, 'Support and challenge searches ran in parallel.', extractedClaims.length * 2, rawCandidatesPerClaim.reduce((count, candidates) => count + candidates.length, 0)));
 
   const focusedExtractionStartedAt = Date.now();
   const enrichedCandidatesPerClaim = await Promise.all(
-    extractedClaims.map((claim, index) => extractFocusedEvidence(claim.text, rawCandidatesPerClaim[index], env.TAVILY_API_KEY))
+    claimsWithAnchors.map((claim, index) => extractFocusedEvidence(claim.text, rawCandidatesPerClaim[index], env.TAVILY_API_KEY))
   );
   trace.push(traceStep('stage-4', 'source-reader', 'Tavily focused source extraction', 'completed', Date.now() - focusedExtractionStartedAt, 'Focused source passages were retained with snippet fallback where needed.', rawCandidatesPerClaim.reduce((count, candidates) => count + candidates.length, 0), enrichedCandidatesPerClaim.reduce((count, candidates) => count + candidates.length, 0)));
 
   const verificationStartedAt = Date.now();
   let verifierFallback = false;
   const verifiedClaims: Claim[] = [];
-  for (let index = 0; index < extractedClaims.length; index++) {
-    const extractedClaim = extractedClaims[index];
+  for (let index = 0; index < claimsWithAnchors.length; index++) {
+    const extractedClaim = claimsWithAnchors[index];
     const verification = await verifyClaimWithGemini(
       extractedClaim.text,
       index + 1,
@@ -180,8 +174,7 @@ export async function runResearchPipeline(
     usedFallback ||= verification.usedFallback;
     verifierFallback ||= verification.usedFallback;
     const claim = attachClaimBuildState(verification.claim);
-    const auditAnchor = auditAnchorForClaim(workflowMode, inputText, extractedClaim);
-    verifiedClaims.push(auditAnchor ? { ...claim, sourceQuote: extractedClaim.sourceQuote, auditAnchor } : claim);
+    verifiedClaims.push(extractedClaim.auditAnchor ? { ...claim, sourceQuote: extractedClaim.sourceQuote, auditAnchor: extractedClaim.auditAnchor } : claim);
   }
   trace.push(traceStep('stage-5', 'verifier', 'Gemini evidence verification', verifierFallback ? 'fallback' : 'completed', Date.now() - verificationStartedAt, 'All extracted claims were verified against retained evidence.', enrichedCandidatesPerClaim.reduce((count, candidates) => count + candidates.length, 0), verifiedClaims.length));
 

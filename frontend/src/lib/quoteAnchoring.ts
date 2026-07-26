@@ -1,4 +1,4 @@
-import type { AuditAnchor } from './types';
+import type { AuditAnchor, WorkflowMode } from './types';
 
 interface NormalizedView {
   text: string;
@@ -123,4 +123,15 @@ export function anchorAuditQuotes(
   }
 
   return result;
+}
+
+export function attachAuditAnchors<T extends { sourceQuote?: string }>(
+  workflowMode: WorkflowMode,
+  claims: T[],
+  anchors: Record<string, AuditAnchor>
+): Array<T & { auditAnchor?: AuditAnchor }> {
+  return claims.map((claim, index) => {
+    if (workflowMode !== 'audit' || !claim.sourceQuote) return claim;
+    return { ...claim, auditAnchor: anchors[`claim-${index + 1}`] };
+  });
 }

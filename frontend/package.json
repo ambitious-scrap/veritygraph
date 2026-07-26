@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "assert:engine": "npx --yes tsx scripts/engine-assertions.ts"
+    "assert:engine": "npx --yes tsx scripts/engine-assertions.ts",
+    "diagnose:gemini": "npx --yes tsx scripts/gemini-diagnostic.ts"
   },
   "dependencies": {
     "@google/genai": "^2.13.0",

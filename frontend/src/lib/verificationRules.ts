@@ -14,16 +14,36 @@ const STOPWORDS = new Set([
   'these', 'those', 'study', 'report', 'review', 'journal', 'article',
 ]);
 
+const TRACKING_PARAMS = new Set([
+  'utm_source',
+  'utm_medium',
+  'utm_campaign',
+  'utm_term',
+  'utm_content',
+  'gclid',
+  'fbclid',
+]);
+
 export function canonicalizeUrl(value: string): string {
+  const input = value.trim();
   try {
-    const url = new URL(value.trim());
+    const url = new URL(input);
     url.hash = '';
+    url.protocol = url.protocol.toLowerCase();
     url.hostname = url.hostname.toLowerCase().replace(/^www\./, '');
     if (url.protocol === 'https:' && url.port === '443') url.port = '';
     if (url.protocol === 'http:' && url.port === '80') url.port = '';
-    return url.toString().replace(/\/$/, '').toLowerCase();
+
+    const query = [...url.searchParams.entries()]
+      .filter(([key]) => !TRACKING_PARAMS.has(key.toLowerCase()))
+      .sort(([leftKey, leftValue], [rightKey, rightValue]) =>
+        leftKey.localeCompare(rightKey) || leftValue.localeCompare(rightValue)
+      );
+    const search = new URLSearchParams(query).toString();
+    const pathname = url.pathname === '/' ? '' : url.pathname;
+    return `${url.protocol}//${url.host}${pathname}${search ? `?${search}` : ''}`;
   } catch {
-    return value.trim().toLowerCase().replace(/\/$/, '');
+    return input;
   }
 }
 
@@ -204,7 +224,10 @@ export function calculateEvidenceMetrics(
   for (const claim of claims) {
     for (const evidence of claim.evidence) {
       const url = canonicalizeUrl(evidence.url);
-      if (!retained.has(url)) retained.set(url, evidence.evidenceBasis);
+      const currentBasis = retained.get(url);
+      if (!currentBasis || (currentBasis === 'search-snippet' && evidence.evidenceBasis === 'focused-source-extract')) {
+        retained.set(url, evidence.evidenceBasis);
+      }
     }
   }
 

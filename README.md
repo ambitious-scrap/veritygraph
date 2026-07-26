@@ -141,6 +141,7 @@ Each live run records six explicit stages: researcher, claim-decomposer, challen
 ## Reproducibility manifest
 
 Runs carry a versioned manifest with the configured model, workflow mode, deterministic rule versions, stage durations, source/evidence counts, fallback usage, and the preserved support/challenge queries for every claim.
+Manifest retained-evidence, focused-extract, and snippet-fallback counts use unique canonical retained URLs, matching run metrics; claim evidence arrays preserve claim-level occurrences.
 
 ## Targeted claim re-verification
 
@@ -189,6 +190,7 @@ Run these from `frontend/`:
 | `npm run lint` | Run ESLint |
 | `npm run build` | Create a production build |
 | `npm run assert:engine` | Run deterministic quote, source-grouping, build-rule, metrics, and provider-fallback assertions |
+| `npm run diagnose:gemini` | Run safe per-key diagnostics; set `GEMINI_DIAGNOSTIC_COMPARE=1` for optional `gemini-2.5-flash` comparison |
 | `npm run start` | Serve the production build |
 
 ## Limitations
